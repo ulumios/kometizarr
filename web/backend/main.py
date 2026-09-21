@@ -1,7 +1,7 @@
 """
 Kometizarr Web UI - FastAPI Backend
 """
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -16,7 +16,6 @@ from datetime import datetime
 sys.path.insert(0, '/app/kometizarr')
 
 from src.rating_overlay.plex_poster_manager import PlexPosterManager
-from src.rating_overlay.multi_rating_badge import MultiRatingBadge
 from src.collection_manager.manager import CollectionManager
 from src.utils.logger import setup_logger
 
@@ -525,69 +524,6 @@ class PreviewRequest(BaseModel):
     include_episodes: bool = False
 
 
-@app.post('/api/preview-test')
-async def preview_test(image: UploadFile = File(...), options: str = Form(...)):
-    """Render manually entered sample data onto an uploaded image; never contact Plex."""
-    import base64
-    import io
-    import tempfile
-    from pathlib import Path
-    from PIL import Image, UnidentifiedImageError
-    from src.rating_overlay.media_badges import draw_media_badges, episode_overlay_options, prepare_canvas
-
-    try:
-        data = json.loads(options)
-        if not isinstance(data, dict):
-            raise ValueError('Invalid options')
-        raw = await image.read(10 * 1024 * 1024 + 1)
-        if len(raw) > 10 * 1024 * 1024:
-            raise HTTPException(413, 'Image exceeds 10 MB')
-        with Image.open(io.BytesIO(raw)) as source:
-            source.load()
-            if source.width * source.height > 25_000_000:
-                raise HTTPException(413, 'Image dimensions exceed 25 megapixels')
-            original = source.convert('RGB')
-        rating = data.get('imdb')
-        if rating not in (None, ''):
-            rating = float(rating)
-            if not 0 <= rating <= 10:
-                raise ValueError('IMDb rating must be between 0 and 10')
-        source_key = data.get('source') if data.get('source') in ('BluRay', 'PreRelease') else None
-        valid = {'DE': '🇩🇪', 'EN': '🇬🇧', 'FR': '🇫🇷', 'ES': '🇪🇸', 'IT': '🇮🇹', 'JA': '🇯🇵'}
-        languages = [(code, valid[code]) for code in data.get('languages', []) if code in valid]
-        badge_style = data.get('badge_style')
-        badge_positions = {'imdb': data.get('imdb_position') or {'x': 2, 'y': 2}}
-        media_style = data.get('media_overlay') or {}
-        source = None
-        if source_key:
-            source = (media_style.get('source_labels') or {}).get(
-                'bluray' if source_key == 'BluRay' else 'prerelease', source_key)
-        status = (media_style.get('status_labels') or {}).get(data.get('status')) if data.get('status') else None
-        if data.get('episode'):
-            badge_style, badge_positions, media_style = episode_overlay_options(
-                badge_style, badge_positions, media_style)
-        with tempfile.TemporaryDirectory(prefix='kometizarr-preview-') as tmp:
-            original_path, output_path = Path(tmp) / 'original.jpg', Path(tmp) / 'result.jpg'
-            original.save(original_path, 'JPEG', quality=95)
-            prepare_canvas(original_path, Path(tmp) / 'canvas.jpg', episode=bool(data.get('episode')))
-            original_path = Path(tmp) / 'canvas.jpg'
-            if rating is not None and rating != '':
-                MultiRatingBadge().apply_to_poster(
-                    str(original_path), {'imdb': rating}, str(output_path),
-                    badge_style=badge_style,
-                    badge_positions=badge_positions)
-            else:
-                with Image.open(original_path) as canvas:
-                    canvas.save(output_path, 'JPEG', quality=95)
-            if source or languages or status:
-                draw_media_badges(str(output_path), source, languages, media_style, status=status)
-            return {'image': base64.b64encode(output_path.read_bytes()).decode(),
-                    'width': 1920 if data.get('episode') else 1000,
-                    'height': 1080 if data.get('episode') else 1500}
-    except (ValueError, TypeError, UnidentifiedImageError, json.JSONDecodeError) as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-
 @app.post("/api/preview")
 async def preview_posters(request: PreviewRequest):
     """
@@ -686,7 +622,8 @@ async def preview_posters(request: PreviewRequest):
                     with Image.open(poster_path) as img:
                         img.convert('RGB').save(output_path, 'JPEG')
                 if source or languages or status:
-                    draw_media_badges(output_path, source, languages, media_options, status=status)
+                    draw_media_badges(output_path, source, languages, media_options,
+                                      status=status, badge_style=style)
 
                 with open(output_path, 'rb') as f:
                     image_b64 = base64.b64encode(f.read()).decode()
@@ -1008,8 +945,9 @@ def _load_settings() -> dict:
     defaults = {
         "cron_normal": {"enabled": False, "libraries": [], "schedule": "0 3 * * *"},
         "cron_force":  {"enabled": False, "libraries": [], "schedule": "0 3 * * 0"},
-        "webhook": {"enabled": False, "libraries": []},
-        "media_overlay": {"source": True, "languages": True, "status": False, "font_percent": 4, "opacity": 180,
+        "webhook": {"enabled": False, "libraries": [], "exclude_libraries": []},
+        "media_overlay": {"source": True, "languages": True, "status": False, "label_size_percent": 4,
+                           "episode_font_percent": 2.8, "font_percent": 4, "opacity": 180,
                            "source_labels": {"bluray": "BluRay", "prerelease": "PreRelease"},
                            "status_labels": {"running": "Läuft", "ended": "Abgeschlossen", "canceled": "Abgesetzt"},
                            "status_position": {"x": 30, "y": 120}},
@@ -1029,6 +967,7 @@ def _load_settings() -> dict:
         data["webhook"]["libraries"] = [] if not old or old == "__all__" else [old]
     for key, value in defaults.items():
         data.setdefault(key, value)
+    data['webhook'] = {**defaults['webhook'], **(data.get('webhook') or {})}
     data['media_overlay'] = {**defaults['media_overlay'], **(data.get('media_overlay') or {})}
     return data
 
@@ -1115,6 +1054,10 @@ async def _webhook_queue_worker():
                 await asyncio.sleep(2)
             # Load current badge settings so webhook uses same styling as the UI
             settings = _load_settings()
+            webhook = settings.get("webhook", {})
+            if not webhook.get("enabled") or library_name in (webhook.get("exclude_libraries") or []):
+                logger.info("Webhook queue: skipping excluded or disabled library %s", library_name)
+                continue
             badge_style = settings.get("badge_style")
             badge_positions = settings.get("badge_positions")
             rating_sources = settings.get("rating_sources")
@@ -1300,6 +1243,9 @@ async def plex_webhook(payload: str = FastAPIForm(...)):
             target_library = metadata.get("librarySectionTitle")
             if not target_library:
                 return {"status": "ignored", "reason": "could not determine library from event"}
+
+            if target_library in (webhook.get("exclude_libraries") or []):
+                return {"status": "ignored", "reason": f"library {target_library!r} excluded from webhooks"}
 
             # If libraries list is non-empty, only process the listed libraries
             allowed = webhook.get("libraries", [])

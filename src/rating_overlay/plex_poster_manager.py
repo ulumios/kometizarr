@@ -297,7 +297,8 @@ class PlexPosterManager:
             if getattr(movie, 'type', None) == 'show' and self.media_overlay.get('status', False) and tmdb_id:
                 status = show_status_label(self.rating_fetcher.fetch_tmdb_status(tmdb_id), self.media_overlay)
             if source or languages or status:
-                draw_media_badges(str(overlay_path), source, languages, self.media_overlay, status=status)
+                draw_media_badges(str(overlay_path), source, languages, self.media_overlay,
+                                  status=status, badge_style=self.badge_style)
 
             # Save overlay version to backup
             self.backup_manager.save_overlay_poster(
@@ -369,7 +370,7 @@ class PlexPosterManager:
                 with Image.open(canvas) as img:
                     img.convert('RGB').save(pending, 'JPEG', quality=95)
             if source or languages:
-                draw_media_badges(str(pending), source, languages, episode_media)
+                draw_media_badges(str(pending), source, languages, episode_media, badge_style=episode_style)
             episode.uploadPoster(filepath=str(pending))
             pending.replace(rendered)
             return True

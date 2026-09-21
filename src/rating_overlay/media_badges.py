@@ -76,14 +76,28 @@ def episode_overlay_options(badge_style=None, badge_positions=None, media_settin
     return style, positions, media
 
 
-def draw_media_badges(path, source=None, languages=(), settings=None, status=None):
+def draw_media_badges(path, source=None, languages=(), settings=None, status=None, badge_style=None):
     settings = settings or {}
+    badge_style = badge_style or {}
     image = Image.open(path).convert('RGBA')
     width, height = image.size
     episode = bool(settings.get('episode'))
-    size = max(10 if episode else 14, int(width * float(settings.get('font_percent', 4)) / 100))
-    font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', size)
-    draw = ImageDraw.Draw(image)
+    size = max(10 if episode else 14, int(width * float(settings.get(
+        'episode_font_percent' if episode else 'label_size_percent',
+        settings.get('font_percent', 2.8 if episode else 4))) / 100
+        * float(badge_style.get('font_size_multiplier', 1))))
+    from .multi_rating_badge import MultiRatingBadge
+    font_path = MultiRatingBadge.FONT_PATHS.get(
+        badge_style.get('font_family', 'Liberation Sans Bold'),
+        MultiRatingBadge.FONT_PATHS['Liberation Sans Bold'])
+    try:
+        font = ImageFont.truetype(font_path, size)
+    except OSError:
+        font = ImageFont.truetype(MultiRatingBadge.FONT_PATHS['DejaVu Sans Bold'], size)
+    layer = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    opacity = max(0, min(255, int(badge_style.get('background_opacity', settings.get('opacity', 180)))))
+    label_color = badge_style.get('rating_color', '#FFFFFF')
     margin = int(width * 0.03)
     def offset(key):
         if episode and key not in settings:
@@ -99,8 +113,8 @@ def draw_media_badges(path, source=None, languages=(), settings=None, status=Non
         x = max(0, min(width - bw, dx if left else width - dx - bw))
         y = max(0, min(height - bh, height - dy - bh))
         draw.rounded_rectangle((x, y, x + bw, y + bh), radius=pad,
-                               fill=(0, 0, 0, int(settings.get('opacity', 180))))
-        draw.text((x + pad, y + pad - box[1]), label, font=font, fill='white')
+                               fill=(15, 17, 22, opacity))
+        draw.text((x + pad, y + pad - box[1]), label, font=font, fill=label_color)
     if source:
         badge(source, True)
     if status and not episode:
@@ -120,7 +134,7 @@ def draw_media_badges(path, source=None, languages=(), settings=None, status=Non
         dx, dy = offset('languages_position')
         x, y = max(0, min(width - total, width - dx - total)), max(0, min(height - bh, height - dy - bh))
         draw.rounded_rectangle((x, y, x + total, y + bh), radius=pad,
-                               fill=(0, 0, 0, int(settings.get('opacity', 180))))
+                               fill=(15, 17, 22, opacity))
         cursor = x + pad
         for row, ((code, _), tw) in enumerate(zip(languages, widths)):
             fx = x + pad if episode else cursor
@@ -160,7 +174,7 @@ def draw_media_badges(path, source=None, languages=(), settings=None, status=Non
                     draw.rectangle((fx, fy + flag_h * .38, fx + flag_w, fy + flag_h * .62), fill='#c8102e')
             draw.text((fx + flag_w + gap,
                        y + pad + row * (size + pad) if episode else y + pad),
-                      code, font=font, fill='white')
+                      code, font=font, fill=label_color)
             if not episode:
                 cursor += flag_w + gap + tw + gap
-    image.convert('RGB').save(path, 'JPEG', quality=95)
+    Image.alpha_composite(image, layer).convert('RGB').save(path, 'JPEG', quality=95)

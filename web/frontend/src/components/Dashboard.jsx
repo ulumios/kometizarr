@@ -26,14 +26,8 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
   const [mediaOverlay, setMediaOverlay] = useState({ source: true, languages: true, status: false,
     source_position: { x: 30, y: 30 }, languages_position: { x: 30, y: 30 }, status_position: { x: 30, y: 120 },
     source_labels: { bluray: 'BluRay', prerelease: 'PreRelease' },
-    status_labels: { running: 'Läuft', ended: 'Abgeschlossen', canceled: 'Abgesetzt' }, font_percent: 4, opacity: 180 })
-  const [testImage, setTestImage] = useState(null)
-  const [testRating, setTestRating] = useState('8.4')
-  const [testSource, setTestSource] = useState('BluRay')
-  const [testStatus, setTestStatus] = useState('')
-  const [testLanguages, setTestLanguages] = useState(['DE', 'EN'])
-  const [testEpisode, setTestEpisode] = useState(true)
-  const [testError, setTestError] = useState('')
+    status_labels: { running: 'Läuft', ended: 'Abgeschlossen', canceled: 'Abgesetzt' },
+    label_size_percent: 4, episode_font_percent: 2.8 })
   const [ratingSources, setRatingSources] = useState(() => {
     // Load from localStorage or default to all enabled
     const saved = localStorage.getItem('kometizarr_rating_sources')
@@ -204,27 +198,54 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     persistBadgeSettings({ badge_style: updated })
   }
 
-  const handlePosterDrag = (e, badgeSource) => {
+  const handlePosterDrag = (e, badgeSource, episodeCanvas = false) => {
     if (!activeDragBadge && !badgeSource) return  // Not dragging
 
     const source = badgeSource || activeDragBadge
-    if (!source || !ratingSources[source]) return  // Badge not enabled
+    const mediaLabel = ['source_position', 'status_position', 'languages_position'].includes(source)
+    if (!source || (!mediaLabel && !ratingSources[source])) return
 
     const rect = e.currentTarget.getBoundingClientRect()
     const clickX = e.clientX - rect.left
     const clickY = e.clientY - rect.top
 
-    // The poster preview and the final poster use one 1000 × 1500 canvas.
-    const badgeWidth = (badgeStyle.individual_badge_size || 9) / 100 * 1000
+    if (mediaLabel) {
+      const width = episodeCanvas ? 1920 : 1000
+      const height = episodeCanvas ? 1080 : 1500
+      const sizePercent = episodeCanvas ? (mediaOverlay.episode_font_percent ?? 2.8)
+        : (mediaOverlay.label_size_percent ?? mediaOverlay.font_percent ?? 4)
+      const fontPx = width * sizePercent / 100 * (badgeStyle.font_size_multiplier ?? 1)
+      const label = source === 'status_position' ? (mediaOverlay.status_labels?.ended ?? 'Abgeschlossen')
+        : source === 'source_position' ? (mediaOverlay.source_labels?.bluray ?? 'BluRay') : 'DE EN'
+      const labelWidth = source === 'languages_position' ? fontPx * 3.8 : fontPx * (label.length * .62 + .7)
+      const labelHeight = source === 'languages_position' ? fontPx * 2.8 : fontPx * 1.6
+      const x = source === 'languages_position'
+        ? width - clickX / rect.width * width - labelWidth / 2
+        : clickX / rect.width * width - labelWidth / 2
+      const y = height - clickY / rect.height * height - labelHeight / 2
+      // Set both coordinates in one update so a drag cannot overwrite its X value.
+      const next = { ...mediaOverlay, [source]: {
+        x: Math.round(Math.max(0, Math.min(width, x))),
+        y: Math.round(Math.max(0, Math.min(height, y))) } }
+      setMediaOverlay(next)
+      savePositionsSoon({ media_overlay: next })
+      return
+    }
+
+    const canvasWidth = episodeCanvas ? 1920 : 1000
+    const canvasHeight = episodeCanvas ? 1080 : 1500
+    const badgeWidth = (episodeCanvas ? mediaOverlay.episode_badge_percent ?? 9
+      : badgeStyle.individual_badge_size || 9) / 100 * canvasWidth
     const badgeHeight = badgeWidth * (source === 'imdb' ? 1.04 : 1.4)
-    const xPx = Math.round(Math.max(0, Math.min(1000 - badgeWidth, clickX / rect.width * 1000 - badgeWidth / 2)))
-    const yPx = Math.round(Math.max(0, Math.min(1500 - badgeHeight, clickY / rect.height * 1500 - badgeHeight / 2)))
+    const xPx = Math.round(Math.max(0, Math.min(canvasWidth - badgeWidth, clickX / rect.width * canvasWidth - badgeWidth / 2)))
+    const yPx = Math.round(Math.max(0, Math.min(canvasHeight - badgeHeight, clickY / rect.height * canvasHeight - badgeHeight / 2)))
     setAlignmentGuides([])
     const newPosition = { x_px: xPx, y_px: yPx }
 
     // Update only this badge's position
     const updated = { ...badgePositions, [source]: newPosition }
     setBadgePositions(updated)
+    badgePositionsRef.current = updated
     localStorage.setItem('kometizarr_badge_positions', JSON.stringify(updated))
   }
 
@@ -234,16 +255,18 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     // Don't move on initial click - only move when dragging (mousemove)
   }
 
-  const handlePosterMouseMove = (e) => {
+  const handlePosterMouseMove = (e, episodeCanvas = false) => {
     if (activeDragBadge) {
-      handlePosterDrag(e)
+      handlePosterDrag(e, null, episodeCanvas)
     }
   }
 
   const handleMouseUp = () => {
     if (activeDragBadge) {
       // Save final drag position to server (use ref to get latest state)
-      persistBadgeSettings({ badge_positions: badgePositionsRef.current })
+      if (!['source_position', 'status_position', 'languages_position'].includes(activeDragBadge)) {
+        persistBadgeSettings({ badge_positions: badgePositionsRef.current })
+      }
     }
     setActiveDragBadge(null)
     setAlignmentGuides([])  // Clear alignment guides
@@ -373,30 +396,6 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     savePositionsSoon({ media_overlay: next })
   }
 
-  const previewTestImage = async () => {
-    if (!testImage) return
-    setPreviewLoading(true)
-    setTestError('')
-    const form = new FormData()
-    form.append('image', testImage)
-    form.append('options', JSON.stringify({ imdb: ratingSources.imdb ? testRating : '',
-      source: mediaOverlay.source ? testSource : '',
-      languages: mediaOverlay.languages ? testLanguages : [], badge_style: badgeStyle,
-      status: mediaOverlay.status ? testStatus : '',
-      imdb_position: badgePositions.imdb, media_overlay: mediaOverlay,
-      episode: testEpisode }))
-    try {
-      const res = await fetch('/api/preview-test', { method: 'POST', body: form })
-      const result = await res.json()
-      if (!res.ok) throw new Error(result.detail || 'Preview failed')
-      setPreviewResults([{ title: testImage.name, image: result.image, ratings: ratingSources.imdb ? { imdb: testRating } : {} }])
-    } catch (error) {
-      setTestError(error.message)
-    } finally {
-      setPreviewLoading(false)
-    }
-  }
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -404,6 +403,45 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
       </div>
     )
   }
+
+  const setRatingPosition = (key, axis, value) => {
+    const next = { ...badgePositions, [key]: { ...badgePositions[key], [`${axis}_px`]: Number(value) } }
+    setBadgePositions(next)
+    badgePositionsRef.current = next
+    localStorage.setItem('kometizarr_badge_positions', JSON.stringify(next))
+    savePositionsSoon({ badge_positions: next })
+  }
+
+  const labelOpacity = (badgeStyle.background_opacity ?? 215) / 255
+  const labelColor = badgeStyle.rating_color || '#FFFFFF'
+  const labelFontFamily = badgeStyle.font_family?.includes('Mono') ? 'monospace'
+    : badgeStyle.font_family?.includes('Serif') ? 'serif' : 'sans-serif'
+  const labelFontWeight = badgeStyle.font_family?.includes('Bold') ? 'bold' : 'normal'
+  const labelFontStyle = /Oblique|Italic/.test(badgeStyle.font_family || '') ? 'italic' : 'normal'
+  const labelFont = Math.max(3, 120 * (mediaOverlay.label_size_percent ?? mediaOverlay.font_percent ?? 4) / 100
+    * (badgeStyle.font_size_multiplier ?? 1))
+
+  const demoLabel = (key, value) => {
+    const width = labelFont * (String(value).length * .62 + .7)
+    const height = labelFont * 1.6
+    const pos = mediaOverlay[key] || {}
+    const x = (pos.x ?? 30) / 1000 * 120
+    const y = 180 - (pos.y ?? (key === 'status_position' ? 120 : 30)) / 1500 * 180 - height
+    return <g key={key} transform={`translate(${Math.max(0, Math.min(120 - width, x))}, ${Math.max(0, Math.min(180 - height, y))})`}
+      className="cursor-move" onMouseDown={e => handleBadgeMouseDown(e, key)}>
+      <rect width={width} height={height} rx="2" fill="#0f1116" fillOpacity={labelOpacity} />
+      <text x={labelFont * .3} y={labelFont * 1.17} fontSize={labelFont} fill={labelColor}
+        fontFamily={labelFontFamily} fontWeight={labelFontWeight} fontStyle={labelFontStyle}>{value}</text>
+    </g>
+  }
+  const episodeFont = Math.max(3, 192 * (mediaOverlay.episode_font_percent ?? 2.8) / 100
+    * (badgeStyle.font_size_multiplier ?? 1))
+  const episodePad = Math.max(1, episodeFont / 5)
+  const episodeSourceText = mediaOverlay.source_labels?.bluray ?? 'BluRay'
+  const episodeSourceWidth = episodeFont * (episodeSourceText.length * .62 + .7)
+  const episodeSourceHeight = episodeFont * 1.6
+  const episodeLanguageWidth = episodeFont * 3.8
+  const episodeLanguageHeight = 2 * (episodeFont + episodePad) + episodePad
 
   return (
     <div className="space-y-6">
@@ -494,113 +532,6 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
           </label>
           <p className="text-xs text-gray-400">Filmbibliotheken bleiben davon unberührt. Die Anzahl der Items und Backups wird passend zur Auswahl berechnet.</p>
         </div>
-        <div className="bg-gray-900 rounded-lg p-4 mb-5 space-y-3">
-          <h3 className="text-sm font-medium">Episode badge layout</h3>
-          <p className="text-xs text-gray-400">Relative edge spacing keeps badges in the same corner when episode artwork has different pixel dimensions.</p>
-          {[
-            ['IMDb badge size', 'episode_badge_percent', 5, 20, 1, 9, '% of image width'],
-            ['Language label size', 'episode_font_percent', 1.5, 5, 0.1, 2.8, '% of image width'],
-            ['Corner spacing', 'episode_edge_percent', 0, 6, 0.1, 1.2, '% from edges'],
-          ].map(([label, key, min, max, step, fallback, unit]) => (
-            <label key={key} className="flex gap-3 items-center text-xs text-gray-300">
-              <span className="w-36">{label}</span>
-              <input type="range" min={min} max={max} step={step}
-                value={mediaOverlay[key] ?? fallback}
-                onChange={e => setEpisodeOption(key, e.target.value)} className="flex-1 accent-blue-500" />
-              <span className="w-32 text-right">{mediaOverlay[key] ?? fallback}{unit}</span>
-            </label>
-          ))}
-          <label className="flex gap-3 items-center text-xs text-gray-300">
-            <span className="w-36">EN flag</span>
-            <select value={mediaOverlay.episode_english_flag ?? 'US'}
-              onChange={e => {
-                const next = { ...mediaOverlay, episode_english_flag: e.target.value }
-                setMediaOverlay(next)
-                savePositionsSoon({ media_overlay: next })
-              }} className="bg-gray-800 border border-gray-700 rounded p-1">
-              <option value="US">🇺🇸 US (reference)</option>
-              <option value="GB">🇬🇧 GB</option>
-            </select>
-          </label>
-        </div>
-        <div className="bg-gray-900 rounded-lg p-4 mb-5 space-y-4">
-          <h3 className="font-medium">Exact overlay positions</h3>
-          <p className="text-xs text-gray-400">Poster offsets use the original image; episode artwork uses a 1920 × 1080 canvas. IMDb measures from top left; source from bottom left; languages from bottom right. Use the uploaded image below to verify the result.</p>
-          <p className="text-xs text-gray-400">Languages come from Plex streams.</p>
-          <div className="flex flex-wrap gap-4 text-sm text-white">
-            {[['source', 'Source label (bottom left)'], ['languages', 'Episode languages (bottom right)'], ['status', 'Serienstatus']].map(([key, label]) => (
-              <label key={key} className="flex items-center gap-2">
-                <input type="checkbox" checked={mediaOverlay[key] ?? false} onChange={() => toggleMediaOverlay(key)} />
-                {label}
-              </label>
-            ))}
-          </div>
-          {[
-            ['IMDb', 'imdb'], ['TMDB', 'tmdb'], ['RT Critic', 'rt_critic'], ['RT Audience', 'rt_audience'],
-            ['BluRay / PreRelease', 'source_position'], ['Serienstatus', 'status_position'],
-            ['Episode languages', 'languages_position'],
-          ].filter(([, key]) => {
-            if (key === 'source_position') return mediaOverlay.source
-            if (key === 'languages_position') return mediaOverlay.languages
-            if (key === 'status_position') return mediaOverlay.status
-            return ratingSources[key]
-          }).map(([label, key]) => (
-            <div key={key} className="space-y-2 border-t border-gray-700 pt-3">
-              <div className="text-sm text-white">{label}</div>
-              {['x', 'y'].map(axis => {
-                const ratingKey = ['imdb', 'tmdb', 'rt_critic', 'rt_audience'].includes(key)
-                const value = ratingKey
-                  ? badgePositions[key]?.[`${axis}_px`] ?? Math.round((badgePositions[key]?.[axis] ?? 2) * (axis === 'x' ? 10 : 14))
-                  : mediaOverlay[key]?.[axis] ?? 30
-                return <label key={axis} className="flex items-center gap-3 text-xs text-gray-400">
-                  <span className="w-5 uppercase">{axis}</span>
-                  <input type="range" min="0" max="2000" step="1" value={value}
-                    onChange={e => {
-                      if (ratingKey) {
-                        const next = { ...badgePositions, [key]: { ...badgePositions[key], [`${axis}_px`]: Number(e.target.value) } }
-                        setBadgePositions(next)
-                        localStorage.setItem('kometizarr_badge_positions', JSON.stringify(next))
-                        savePositionsSoon({ badge_positions: next })
-                      } else setMediaPosition(key, axis, e.target.value)
-                    }} className="flex-1 accent-blue-500" />
-                  <input type="number" min="0" max="2000" value={value}
-                    onChange={e => {
-                      const n = Math.max(0, Math.min(2000, Number(e.target.value) || 0))
-                      if (ratingKey) {
-                        const next = { ...badgePositions, [key]: { ...badgePositions[key], [`${axis}_px`]: n } }
-                        setBadgePositions(next)
-                        savePositionsSoon({ badge_positions: next })
-                      } else setMediaPosition(key, axis, n)
-                    }} className="w-16 bg-gray-800 border border-gray-700 rounded px-1 py-1 text-white" />px
-                </label>
-              })}
-            </div>
-          ))}
-          <div className="border-t border-gray-700 pt-3 space-y-3">
-            <h3 className="text-sm font-medium">Test render with your own image</h3>
-            <label className="flex gap-2 text-xs items-center">
-              <input type="checkbox" checked={testEpisode} onChange={e => setTestEpisode(e.target.checked)} />
-              Use episode sizing and corners
-            </label>
-            <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTestImage(e.target.files?.[0] || null)} className="text-xs w-full" />
-            <div className="flex flex-wrap items-center gap-3 text-sm">
-              <label>IMDb <input type="number" min="0" max="10" step="0.1" value={testRating} onChange={e => setTestRating(e.target.value)} className="w-16 bg-gray-800 border border-gray-700 rounded p-1" /></label>
-              <label>Source <select value={testSource} onChange={e => setTestSource(e.target.value)} className="bg-gray-800 border border-gray-700 rounded p-1">
-                <option value="">None</option><option>BluRay</option><option>PreRelease</option>
-              </select></label>
-              <label>Status <select value={testStatus} onChange={e => setTestStatus(e.target.value)} className="bg-gray-800 border border-gray-700 rounded p-1">
-                <option value="">None</option><option value="running">Läuft</option><option value="ended">Abgeschlossen</option><option value="canceled">Abgesetzt</option>
-              </select></label>
-            </div>
-            <div className="flex flex-wrap gap-3 text-xs">Audio languages:
-              {['DE', 'EN', 'FR', 'ES', 'IT', 'JA'].map(code => <label key={code} className="flex gap-1 items-center">
-                <input type="checkbox" checked={testLanguages.includes(code)} onChange={() => setTestLanguages(prev => prev.includes(code) ? prev.filter(x => x !== code) : [...prev, code])} />{code}
-              </label>)}
-            </div>
-            <button disabled={!testImage || previewLoading} onClick={previewTestImage} className="px-3 py-2 bg-blue-600 disabled:bg-gray-700 rounded text-sm">Render test image</button>
-            {testError && <p role="alert" className="text-red-400 text-xs">{testError}</p>}
-          </div>
-        </div>
         <div className="space-y-4">
           {/* Position & Styling - Side by Side Layout */}
           <div>
@@ -631,7 +562,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                       const logoAreaHeight = badgeHeight * 0.6 * Math.min(logoMultiplier / 2.0, 1.0)
                       // Font size applies to bottom 40% (rating number), scaled by font_size_multiplier
                       const fontSize = (badgeWidth / 14) * 8 * fontMultiplier
-                      const opacity = (badgeStyle.background_opacity || 128) / 255
+                      const opacity = labelOpacity
 
                       // Map font family to CSS font-family for SVG
                       const getFontFamily = (fontName) => {
@@ -672,8 +603,13 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                               transform={`translate(${badgePositions.imdb.x_px != null ? badgePositions.imdb.x_px / 1000 * 120 : badgePositions.imdb.x / 100 * 120}, ${badgePositions.imdb.y_px != null ? badgePositions.imdb.y_px / 1500 * 180 : badgePositions.imdb.y / 100 * 180})`}
                             >
                               <rect width={badgeWidth} height={badgeWidth * 1.04} fill="#0f1116" fillOpacity={(badgeStyle.background_opacity ?? 215) / 255} rx="2" />
-                              <rect x={badgeWidth * .05} y={badgeWidth * .08} width={badgeWidth * .90} height={badgeWidth * .42} fill="#f5c518" rx="1" />
-                              <text x={badgeWidth / 2} y={badgeWidth * .29} fontSize={badgeWidth * .23} fill="#111" textAnchor="middle" dominantBaseline="middle" fontFamily="sans-serif" fontWeight="bold" className="pointer-events-none select-none">IMDb</text>
+                              <rect x={(badgeWidth - Math.min(badgeWidth * .90 * logoMultiplier, badgeWidth - 2)) / 2}
+                                y={badgeWidth * .08} width={Math.min(badgeWidth * .90 * logoMultiplier, badgeWidth - 2)}
+                                height={badgeWidth * .42} fill="#f5c518" rx="1" />
+                              <text x={badgeWidth / 2} y={badgeWidth * .29}
+                                fontSize={badgeWidth * .23 * Math.min(logoMultiplier, 1.15)} fill="#111"
+                                textAnchor="middle" dominantBaseline="middle" fontFamily="sans-serif" fontWeight="bold"
+                                className="pointer-events-none select-none">IMDb</text>
                               <text x={badgeWidth / 2} y={badgeWidth * .78} fontSize={badgeWidth * .31 * (badgeStyle.font_size_multiplier || 1)} fill={badgeStyle.rating_color || '#FFFFFF'} textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontWeight="bold" className="pointer-events-none select-none">8.4</text>
                             </g>
                           )}
@@ -703,22 +639,8 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                       )
                     })()}
 
-                    {mediaOverlay.source && <g>
-                      <rect x={(mediaOverlay.source_position?.x ?? 30) / 1000 * 120}
-                        y={180 - (mediaOverlay.source_position?.y ?? 30) / 1500 * 180 - 8}
-                        width="30" height="8" rx="2" fill="#000" fillOpacity=".8" />
-                      <text x={(mediaOverlay.source_position?.x ?? 30) / 1000 * 120 + 2}
-                        y={180 - (mediaOverlay.source_position?.y ?? 30) / 1500 * 180 - 2}
-                        fontSize="5" fill="white">{mediaOverlay.source_labels?.bluray ?? 'BluRay'}</text>
-                    </g>}
-                    {mediaOverlay.status && <g>
-                      <rect x={(mediaOverlay.status_position?.x ?? 30) / 1000 * 120}
-                        y={180 - (mediaOverlay.status_position?.y ?? 120) / 1500 * 180 - 8}
-                        width="39" height="8" rx="2" fill="#000" fillOpacity=".8" />
-                      <text x={(mediaOverlay.status_position?.x ?? 30) / 1000 * 120 + 2}
-                        y={180 - (mediaOverlay.status_position?.y ?? 120) / 1500 * 180 - 2}
-                        fontSize="5" fill="white">{mediaOverlay.status_labels?.[testStatus || 'ended'] ?? 'Abgeschlossen'}</text>
-                    </g>}
+                    {mediaOverlay.source && demoLabel('source_position', mediaOverlay.source_labels?.bluray ?? 'BluRay')}
+                    {mediaOverlay.status && demoLabel('status_position', mediaOverlay.status_labels?.ended ?? 'Abgeschlossen')}
 
                     {/* Alignment Guides */}
                     {alignmentGuides.map((guide, index) => {
@@ -760,22 +682,47 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                   {(includeEpisodes || mediaOverlay.languages) && (
                     <div className="mt-3">
                       <div className="text-xs text-gray-400 mb-1">Episodenbild (16:9): Sprachen untereinander</div>
-                      <svg viewBox="0 0 192 108" className="w-48 h-auto" aria-label="Episoden-Vorschau">
+                      <svg viewBox="0 0 192 108" className="w-48 h-auto select-none"
+                        aria-label="Episoden-Vorschau" onMouseMove={e => handlePosterMouseMove(e, true)}
+                        onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
                         <rect width="192" height="108" rx="3" fill="#1f2937" stroke="#4b5563" />
-                        {ratingSources.imdb && <g transform={`translate(${(badgePositions.imdb?.x_px ?? 30) / 1920 * 192}, ${(badgePositions.imdb?.y_px ?? 28) / 1080 * 108})`}>
-                          <rect width="16" height="17" rx="2" fill="#0f1116" />
-                          <rect x="1" y="1" width="14" height="7" rx="1" fill="#f5c518" />
-                          <text x="8" y="6" textAnchor="middle" fontSize="4" fontWeight="bold" fill="#111">IMDb</text>
-                          <text x="8" y="14" textAnchor="middle" fontSize="6" fontWeight="bold" fill="white">8.4</text>
+                        {ratingSources.imdb && <g className="cursor-move" onMouseDown={e => handleBadgeMouseDown(e, 'imdb')}
+                          transform={`translate(${(badgePositions.imdb?.x_px ?? (badgePositions.imdb?.x ?? 2) * 19.2) / 10}, ${(badgePositions.imdb?.y_px ?? (badgePositions.imdb?.y ?? 2) * 10.8) / 10})`}>
+                          <rect width={(mediaOverlay.episode_badge_percent ?? 9) / 100 * 192}
+                            height={(mediaOverlay.episode_badge_percent ?? 9) / 100 * 192 * 1.04}
+                            rx="2" fill="#0f1116" fillOpacity={labelOpacity} />
+                          <rect x="1" y="1" width={(mediaOverlay.episode_badge_percent ?? 9) / 100 * 192 - 2}
+                            height={(mediaOverlay.episode_badge_percent ?? 9) / 100 * 192 * .42}
+                            rx="1" fill="#f5c518" />
+                          <text x={(mediaOverlay.episode_badge_percent ?? 9) / 100 * 96} y="7" textAnchor="middle"
+                            fontSize="4" fontWeight="bold" fill="#111">IMDb</text>
+                          <text x={(mediaOverlay.episode_badge_percent ?? 9) / 100 * 96}
+                            y={(mediaOverlay.episode_badge_percent ?? 9) / 100 * 192 * .82}
+                            textAnchor="middle" fontSize={(mediaOverlay.episode_badge_percent ?? 9) / 100 * 192 * .31
+                              * (badgeStyle.font_size_multiplier ?? 1)} fontFamily={labelFontFamily}
+                            fontWeight={labelFontWeight} fill={labelColor}>8.4</text>
                         </g>}
-                        {mediaOverlay.source && <g transform={`translate(${(mediaOverlay.source_position?.x ?? 30) / 1920 * 192}, ${108 - (mediaOverlay.source_position?.y ?? 30) / 1080 * 108 - 8})`}>
-                          <rect width="27" height="8" rx="2" fill="#000" fillOpacity=".8" />
-                          <text x="2" y="6" fontSize="5" fill="white">{mediaOverlay.source_labels?.bluray ?? 'BluRay'}</text>
+                        {mediaOverlay.source && <g className="cursor-move" onMouseDown={e => handleBadgeMouseDown(e, 'source_position')}
+                          transform={`translate(${(mediaOverlay.source_position?.x ?? 30) / 10}, ${108 - (mediaOverlay.source_position?.y ?? 30) / 10 - episodeSourceHeight})`}>
+                          <rect width={episodeSourceWidth} height={episodeSourceHeight} rx="2"
+                            fill="#0f1116" fillOpacity={labelOpacity} />
+                          <text x={episodeFont * .3} y={episodeFont * 1.17} fontSize={episodeFont}
+                            fontFamily={labelFontFamily} fontWeight={labelFontWeight} fontStyle={labelFontStyle}
+                            fill={labelColor}>{episodeSourceText}</text>
                         </g>}
-                        {mediaOverlay.languages && <g transform={`translate(${192 - (mediaOverlay.languages_position?.x ?? 30) / 1920 * 192 - 23}, ${108 - (mediaOverlay.languages_position?.y ?? 30) / 1080 * 108 - 17})`}>
-                          <rect width="23" height="17" rx="2" fill="#000" fillOpacity=".8" />
-                          <text x="2" y="7" fontSize="6" fill="white">🇩🇪 DE</text>
-                          <text x="2" y="14" fontSize="6" fill="white">🇺🇸 EN</text>
+                        {mediaOverlay.languages && <g className="cursor-move" onMouseDown={e => handleBadgeMouseDown(e, 'languages_position')}
+                          transform={`translate(${192 - (mediaOverlay.languages_position?.x ?? 30) / 10 - episodeLanguageWidth}, ${108 - (mediaOverlay.languages_position?.y ?? 30) / 10 - episodeLanguageHeight})`}>
+                          <rect width={episodeLanguageWidth} height={episodeLanguageHeight} rx="2"
+                            fill="#0f1116" fillOpacity={labelOpacity} />
+                          {['DE', 'EN'].map((code, row) => <g key={code}
+                            transform={`translate(${episodePad}, ${episodePad + row * (episodeFont + episodePad)})`}>
+                            <text x="0" y={episodeFont * .85} fontSize={episodeFont * .85} fill="white">
+                              {code === 'DE' ? '🇩🇪' : mediaOverlay.episode_english_flag === 'GB' ? '🇬🇧' : '🇺🇸'}
+                            </text>
+                            <text x={episodeFont * 1.4} y={episodeFont * .85} fontSize={episodeFont}
+                              fontFamily={labelFontFamily} fontWeight={labelFontWeight}
+                              fontStyle={labelFontStyle} fill={labelColor}>{code}</text>
+                          </g>)}
                         </g>}
                       </svg>
                     </div>
@@ -790,10 +737,40 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
 
                 {/* RIGHT: Styling Controls */}
                 <div className="flex-1 space-y-3">
+                  <div className="border-b border-gray-700 pb-4 space-y-3">
+                    <h3 className="text-sm font-medium">Positionen direkt auf den Demos ziehen oder per Slider einstellen</h3>
+                    {[
+                      ['IMDb', 'imdb', ratingSources.imdb], ['TMDB', 'tmdb', ratingSources.tmdb],
+                      ['RT Critic', 'rt_critic', ratingSources.rt_critic],
+                      ['RT Audience', 'rt_audience', ratingSources.rt_audience],
+                      ['BluRay / PreRelease', 'source_position', mediaOverlay.source],
+                      ['Serienstatus', 'status_position', mediaOverlay.status],
+                      ['Episodensprachen', 'languages_position', mediaOverlay.languages],
+                    ].filter(([, , enabled]) => enabled).map(([label, key]) => (
+                      <div key={key} className="text-xs text-gray-300">
+                        <div className="mb-1">{label}</div>
+                        {['x', 'y'].map(axis => {
+                          const rating = !key.endsWith('_position')
+                          const current = rating
+                            ? badgePositions[key]?.[`${axis}_px`] ?? Math.round((badgePositions[key]?.[axis] ?? 2) * (axis === 'x' ? 10 : 15))
+                            : mediaOverlay[key]?.[axis] ?? (key === 'status_position' && axis === 'y' ? 120 : 30)
+                          return <label key={axis} className="flex items-center gap-2">
+                            <span className="uppercase w-3">{axis}</span>
+                            <input type="range" min="0" max="2000" step="1" value={current}
+                              onChange={e => rating ? setRatingPosition(key, axis, e.target.value) : setMediaPosition(key, axis, e.target.value)}
+                              className="flex-1 accent-blue-500" />
+                            <input type="number" min="0" max="2000" value={current}
+                              onChange={e => rating ? setRatingPosition(key, axis, e.target.value) : setMediaPosition(key, axis, e.target.value)}
+                              className="w-16 bg-gray-800 border border-gray-700 rounded px-1 py-1 text-white" />px
+                          </label>
+                        })}
+                      </div>
+                    ))}
+                  </div>
                   {/* Badge Size */}
                   <div>
                     <label className="text-xs text-gray-400 block mb-1">
-                      Badge Size: {badgeStyle.individual_badge_size}% of image width
+                      Rating-Badges: {badgeStyle.individual_badge_size}% der Posterbreite
                     </label>
                     <input
                       type="range"
@@ -804,6 +781,43 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                       onChange={(e) => updateBadgeStyle('individual_badge_size', parseInt(e.target.value))}
                       className="w-full accent-blue-500"
                     />
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">
+                      Text-Badges (BluRay / Status): {mediaOverlay.label_size_percent ?? mediaOverlay.font_percent ?? 4}% der Posterbreite
+                    </label>
+                    <input type="range" min="1" max="12" step="0.1"
+                      value={mediaOverlay.label_size_percent ?? mediaOverlay.font_percent ?? 4}
+                      onChange={e => setEpisodeOption('label_size_percent', e.target.value)}
+                      className="w-full accent-blue-500" />
+                  </div>
+
+                  <div className="border-t border-gray-700 pt-3 space-y-2">
+                    <div className="text-xs font-medium text-gray-300">Episoden-Demo (16:9)</div>
+                    {[
+                      ['IMDb-Badge', 'episode_badge_percent', 5, 20, 1, 9],
+                      ['Text und Flaggen', 'episode_font_percent', 1, 7, .1, 2.8],
+                      ['Randabstand ohne Positionswert', 'episode_edge_percent', 0, 6, .1, 1.2],
+                    ].map(([label, key, min, max, step, fallback]) => (
+                      <label key={key} className="block text-xs text-gray-400">
+                        {label}: {mediaOverlay[key] ?? fallback}% der Bildbreite
+                        <input type="range" min={min} max={max} step={step}
+                          value={mediaOverlay[key] ?? fallback}
+                          onChange={e => setEpisodeOption(key, e.target.value)}
+                          className="w-full accent-blue-500" />
+                      </label>
+                    ))}
+                    <label className="text-xs text-gray-400 flex items-center gap-2">EN-Flagge
+                      <select value={mediaOverlay.episode_english_flag ?? 'US'}
+                        onChange={e => {
+                          const next = { ...mediaOverlay, episode_english_flag: e.target.value }
+                          setMediaOverlay(next)
+                          savePositionsSoon({ media_overlay: next })
+                        }} className="bg-gray-800 border border-gray-700 rounded p-1">
+                        <option value="US">🇺🇸 US</option><option value="GB">🇬🇧 GB</option>
+                      </select>
+                    </label>
                   </div>
 
                   {/* Font Size */}
@@ -910,8 +924,11 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                         font_family: 'Liberation Sans Bold'
                       }
                       setBadgeStyle(defaults)
+                      const mediaDefaults = { ...mediaOverlay, label_size_percent: 4, episode_font_percent: 2.8,
+                        episode_badge_percent: 9 }
+                      setMediaOverlay(mediaDefaults)
                       localStorage.setItem('kometizarr_badge_style', JSON.stringify(defaults))
-                      persistBadgeSettings({ badge_style: defaults })
+                      persistBadgeSettings({ badge_style: defaults, media_overlay: mediaDefaults })
                     }}
                     className="w-full text-xs px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded border border-gray-700 transition"
                   >

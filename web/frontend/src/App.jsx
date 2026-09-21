@@ -7,6 +7,7 @@ import Settings from './components/Settings'
 function App() {
   const [processing, setProcessing] = useState(false)
   const [progressData, setProgressData] = useState(null)
+  const [showProgressBanner, setShowProgressBanner] = useState(false)
   const [activeTab, setActiveTab] = useState('overlays')
   const [selectedLibrary, setSelectedLibrary] = useState(null)
   const [checkingStatus, setCheckingStatus] = useState(true)
@@ -22,6 +23,7 @@ function App() {
         if (status.is_processing || status.is_restoring) {
           setProcessing(true)
           setProgressData(status)
+          setShowProgressBanner(true)
         }
       } catch (error) {
         console.error('Failed to check processing status:', error)
@@ -32,6 +34,17 @@ function App() {
 
     checkProcessingStatus()
   }, [])
+
+  useEffect(() => {
+    if (!progressData) return
+    if (progressData.is_processing || progressData.is_restoring) {
+      setShowProgressBanner(true)
+      return
+    }
+    if (!progressData.progress) return
+    const timer = setTimeout(() => setShowProgressBanner(false), 10000)
+    return () => clearTimeout(timer)
+  }, [progressData?.is_processing, progressData?.is_restoring, progressData?.progress])
 
   // Show loading state while checking for active processing
   if (checkingStatus) {
@@ -115,6 +128,7 @@ function App() {
               <Dashboard
                 onStartProcessing={() => {
                   setProgressData(null) // Clear old data (handles backend rebuilds)
+                  setShowProgressBanner(true)
                   setProcessing(true)
                 }}
             onLibrarySelect={setSelectedLibrary}
@@ -128,7 +142,7 @@ function App() {
         )}
       </main>
 
-      {progressData && !processing && (
+      {progressData && !processing && showProgressBanner && (
         <ProcessingProgress compact progressData={progressData} setProgressData={setProgressData}
           onComplete={() => setProcessing(true)} />
       )}

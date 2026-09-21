@@ -4,7 +4,6 @@ function ProcessingProgress({ onComplete, progressData, setProgressData, compact
   const [ws, setWs] = useState(null)
   const wsRef = useRef(null)
   const [stopping, setStopping] = useState(false)
-  const [countdown, setCountdown] = useState(null)
   const reconnectTimeoutRef = useRef(null)
   const [reconnecting, setReconnecting] = useState(false)
 
@@ -25,20 +24,11 @@ function ProcessingProgress({ onComplete, progressData, setProgressData, compact
         const data = JSON.parse(event.data)
         setProgressData(data)
 
-        // Reset countdown if a new operation starts
-        if (data.is_processing || data.is_restoring) {
-          setCountdown(null)
-        }
-
         // Clear stopping state when operation completes
         if (!data.is_processing && !data.is_restoring) {
           setStopping(false)
         }
 
-        // Start countdown when processing or restoring finishes
-        if ((data.is_processing === false || data.is_restoring === false) && data.progress > 0) {
-          setCountdown(10) // Start 10 second countdown
-        }
       }
 
       websocket.onerror = (error) => {
@@ -75,22 +65,6 @@ function ProcessingProgress({ onComplete, progressData, setProgressData, compact
       }
     }
   }, [])
-
-  // Countdown timer effect
-  useEffect(() => {
-    if (countdown === null) return
-
-    if (countdown === 0) {
-      onComplete()
-      return
-    }
-
-    const timer = setTimeout(() => {
-      setCountdown(countdown - 1)
-    }, 1000)
-
-    return () => clearTimeout(timer)
-  }, [countdown, onComplete])
 
   const handleStop = async () => {
     const isRestoring = progressData.is_restoring !== undefined
@@ -273,19 +247,10 @@ function ProcessingProgress({ onComplete, progressData, setProgressData, compact
               ? `Successfully restored ${successCount} out of ${progressData.total} items`
               : `Successfully processed ${successCount} items (${progressData.failed || 0} failed, ${progressData.skipped || 0} skipped)`}
           </div>
-          {countdown !== null && countdown > 0 && (
-            <div className="flex items-center justify-center gap-4 mt-4">
-              <div className="text-sm text-blue-400">
-                Going back in {countdown} second{countdown !== 1 ? 's' : ''}...
-              </div>
-              <button
-                onClick={onComplete}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded transition text-sm"
-              >
-                Back to Dashboard
-              </button>
-            </div>
-          )}
+          <button onClick={onComplete}
+            className="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded text-sm">
+            Back to Dashboard
+          </button>
         </div>
       )}
     </div>
