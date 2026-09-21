@@ -63,6 +63,7 @@ class PlexPosterManager:
         self.rating_sources = rating_sources or {}
         self.badge_style = badge_style or {}  # Store badge styling options
         self.media_overlay = media_overlay or {}
+        self.imdb_ratings = {}  # Official IMDb dataset values, when enabled and cached
 
         # Connect to Plex
         self.server = PlexServer(plex_url, plex_token)
@@ -200,6 +201,8 @@ class PlexPosterManager:
             # Use Plex's IMDb rating if available
             if 'imdb' in plex_ratings:
                 ratings['imdb'] = plex_ratings['imdb']
+            if imdb_id in self.imdb_ratings:
+                ratings['imdb'] = self.imdb_ratings[imdb_id]
 
             # Use Plex's RT scores if available
             if 'rt_critic' in plex_ratings:
@@ -352,6 +355,9 @@ class PlexPosterManager:
                 with Image.open(original) as img:
                     img.verify()
             ratings = self._extract_plex_ratings(episode)
+            imdb_id = self._extract_imdb_id(getattr(episode, 'guids', []) or [])
+            if imdb_id in self.imdb_ratings:
+                ratings['imdb'] = self.imdb_ratings[imdb_id]
             ratings = {k: v for k, v in ratings.items() if self.rating_sources.get(k, True)}
             source = source_label(episode, self.media_overlay) if self.media_overlay.get('source', False) else None
             languages = audio_languages(episode) if self.media_overlay.get('languages', False) else []

@@ -19,12 +19,13 @@ def source_label(item, settings=None):
 
 def show_status_label(status, settings=None):
     """Map TMDb's series state to the user-facing poster label."""
-    key = {'Returning Series': 'running', 'In Production': 'running',
+    key = {'Airing': 'airing', 'Returning Series': 'running', 'In Production': 'running',
            'Planned': 'running', 'Pilot': 'running', 'Canceled': 'canceled',
            'Ended': 'ended'}.get(status)
     if not key:
         return None
-    defaults = {'running': 'Läuft', 'ended': 'Abgeschlossen', 'canceled': 'Abgesetzt'}
+    defaults = {'airing': 'Läuft gerade', 'running': 'Wird fortgesetzt',
+                'ended': 'Abgeschlossen', 'canceled': 'Abgesetzt'}
     return ((settings or {}).get('status_labels') or {}).get(key, defaults[key])
 
 

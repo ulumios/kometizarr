@@ -26,7 +26,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
   const [mediaOverlay, setMediaOverlay] = useState({ source: true, languages: true, status: false,
     source_position: { x: 30, y: 30 }, languages_position: { x: 30, y: 30 }, status_position: { x: 30, y: 120 },
     source_labels: { bluray: 'BluRay', prerelease: 'PreRelease' },
-    status_labels: { running: 'Läuft', ended: 'Abgeschlossen', canceled: 'Abgesetzt' },
+    status_labels: { airing: 'Läuft gerade', running: 'Wird fortgesetzt', ended: 'Abgeschlossen', canceled: 'Abgesetzt' },
     label_size_percent: 4, episode_font_percent: 2.8 })
   const [ratingSources, setRatingSources] = useState(() => {
     // Load from localStorage or default to all enabled
@@ -1032,7 +1032,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                   }} className="block w-full mt-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white" />
                 </label>
               ))}
-              {[['running', 'Läuft'], ['ended', 'Abgeschlossen'], ['canceled', 'Abgesetzt']].map(([key, label]) => (
+              {[['airing', 'Läuft gerade'], ['running', 'Wird fortgesetzt'], ['ended', 'Abgeschlossen'], ['canceled', 'Abgesetzt']].map(([key, label]) => (
                 <label key={key} className="text-gray-400">Status: {key}
                   <input value={mediaOverlay.status_labels?.[key] ?? label} onChange={e => {
                     const next = { ...mediaOverlay, status_labels: { ...mediaOverlay.status_labels, [key]: e.target.value } }

@@ -12,6 +12,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [error, setError] = useState('')
   const [confirmReset, setConfirmReset] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [posterVersion] = useState(() => Date.now())
 
   useEffect(() => {
     fetch('/api/libraries').then(r => r.json()).then(data => {
@@ -71,10 +72,13 @@ export default function LibraryBrowser({ onStartProcessing }) {
         <button disabled={!items.length} onClick={() => setSelected(previous => allVisible ? previous.filter(k => !items.some(item => item.key === k)) : [...new Set([...previous, ...items.map(item => item.key)])])}
           className="text-sm text-blue-300 disabled:text-gray-600">{allVisible ? 'Sichtbare abwählen' : 'Sichtbare auswählen'}</button>
       </div>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">{items.map(item => <div key={item.key} className={`rounded border p-3 flex items-center gap-3 ${selected.includes(item.key) ? 'border-blue-500 bg-blue-950/30' : 'border-gray-600 bg-gray-900'}`}>
-        <input type="checkbox" aria-label={`${item.title} auswählen`} checked={selected.includes(item.key)} onChange={() => toggle(item.key)} />
-        <span className="flex-1 min-w-0 truncate" title={item.title}>{item.type === 'season' ? `Staffel ${item.index ?? '–'} · ` : ''}{item.title} {item.year ? `(${item.year})` : ''}</span>
-        {item.type === 'show' && <button className="text-blue-300 text-sm shrink-0" onClick={() => openShow(item)}>Staffeln →</button>}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-4">{items.map(item => <div key={item.key} className={`rounded-lg border overflow-hidden ${selected.includes(item.key) ? 'border-blue-500 bg-blue-950/30' : 'border-gray-600 bg-gray-900'}`}>
+        <button type="button" onClick={() => toggle(item.key)} aria-label={`${item.title} auswählen`} className="relative block w-full aspect-[2/3] bg-gray-950">
+          <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${encodeURIComponent(item.key)}?v=${posterVersion}`} alt="" className="w-full h-full object-cover" />
+          <span className={`absolute top-2 right-2 rounded px-2 py-1 text-sm ${selected.includes(item.key) ? 'bg-blue-600 text-white' : 'bg-gray-900/90 text-gray-200'}`}>{selected.includes(item.key) ? '✓' : '○'}</span>
+        </button>
+        <div className="p-2.5"><div className="text-sm truncate" title={item.title}>{item.type === 'season' ? `Staffel ${item.index ?? '–'} · ` : ''}{item.title} {item.year ? `(${item.year})` : ''}</div>
+        {item.type === 'show' && <button className="text-blue-300 text-xs mt-1" onClick={() => openShow(item)}>Staffeln anzeigen →</button>}</div>
       </div>)}</div>
       {total > 60 && <div className="flex items-center gap-4 mt-5"><button disabled={page === 1} onClick={() => setPage(page - 1)}>← Zurück</button><span>Seite {page} / {Math.ceil(total / 60)}</span><button disabled={page * 60 >= total} onClick={() => setPage(page + 1)}>Weiter →</button></div>}
     </div>

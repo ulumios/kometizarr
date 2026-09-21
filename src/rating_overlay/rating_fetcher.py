@@ -6,6 +6,7 @@ MIT License - Copyright (c) 2026 Kometizarr Contributors
 """
 
 import requests
+from datetime import date, timedelta
 from typing import Dict, Optional
 
 
@@ -67,7 +68,19 @@ class RatingFetcher:
         try:
             response = requests.get(f"{self.TMDB_BASE_URL}/tv/{tmdb_id}?api_key={self.tmdb_api_key}", timeout=20)
             response.raise_for_status()
-            return response.json().get('status')
+            data = response.json()
+            status = data.get('status')
+            if status == 'Returning Series':
+                today = date.today()
+                next_date = (data.get('next_episode_to_air') or {}).get('air_date')
+                last_date = (data.get('last_episode_to_air') or {}).get('air_date')
+                try:
+                    if (next_date and today <= date.fromisoformat(next_date) <= today + timedelta(days=30)) or (
+                        last_date and today - timedelta(days=7) <= date.fromisoformat(last_date) <= today):
+                        return 'Airing'
+                except ValueError:
+                    pass
+            return status
         except Exception as e:
             print(f"✗ Error fetching TMDB status: {e}")
             return None

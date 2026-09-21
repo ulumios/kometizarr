@@ -247,6 +247,8 @@ export default function Settings() {
   const [settings, setSettings] = useState(null)
   const [saving, setSaving] = useState(false)
   const [savedMsg, setSavedMsg] = useState('')
+  const [imdbSync, setImdbSync] = useState(null)
+  const [imdbError, setImdbError] = useState('')
 
   // Fresh posters
   const [freshLibs, setFreshLibs] = useState([])
@@ -273,10 +275,28 @@ export default function Settings() {
 
   useEffect(() => {
     fetch('/api/libraries').then(r => r.json()).then(d => setLibraries(d.libraries || []))
+    fetch('/api/imdb-sync/status').then(r => r.json()).then(setImdbSync).catch(() => {})
     fetch('/api/settings').then(r => r.json()).then(data => {
       setSettings(data)
     })
   }, [])
+
+  useEffect(() => {
+    if (!imdbSync?.is_running) return
+    const timer = setInterval(() => fetch('/api/imdb-sync/status').then(r => r.json()).then(setImdbSync).catch(() => {}), 1500)
+    return () => clearInterval(timer)
+  }, [imdbSync?.is_running])
+
+  const refreshImdb = async () => {
+    setImdbError('')
+    try {
+      await saveSettings({ imdb_direct: settings.imdb_direct })
+      const response = await fetch('/api/imdb-sync', { method: 'POST' })
+      const data = await response.json()
+      if (!response.ok) throw Error(data.detail || 'IMDb refresh could not start')
+      setImdbSync(s => ({ ...s, is_running: true, phase: 'Scanning Plex' }))
+    } catch (e) { setImdbError(e.message) }
+  }
 
   const saveSettings = async (patch) => {
     setSaving(true)
@@ -408,6 +428,29 @@ export default function Settings() {
           </button>
           {savedMsg && <span className="text-xs text-green-400">{savedMsg}</span>}
         </div>
+      </section>
+
+      <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
+        <h2 className="text-white font-semibold">IMDb-Wertungen direkt aktualisieren</h2>
+        <p className="text-sm text-gray-400">Lädt den offiziellen IMDb-Bewertungsdatensatz und speichert die Werte deiner Plex-Titel lokal. Beim ersten Lauf werden vorhandene Overlays mit passender IMDb-ID neu erstellt; danach nur bei geändertem Wert. Episoden ohne eigene IMDb-ID werden übersprungen.</p>
+        <label className="flex gap-3 items-center text-sm"><input type="checkbox" checked={!!settings.imdb_direct?.enabled} onChange={e => setSettings(s => ({ ...s, imdb_direct: { ...s.imdb_direct, enabled: e.target.checked } }))} />IMDb-Datensatz für neue Overlays verwenden</label>
+        <label className="flex gap-3 items-center text-sm"><input type="checkbox" checked={!!settings.imdb_direct?.auto_refresh} onChange={e => setSettings(s => ({ ...s, imdb_direct: { ...s.imdb_direct, auto_refresh: e.target.checked } }))} />Täglich automatisch prüfen</label>
+        {settings.imdb_direct?.auto_refresh && <label className="text-sm flex items-center gap-3">Stunde (Serverzeit) <input type="number" min="0" max="23" value={settings.imdb_direct?.hour ?? 4} onChange={e => setSettings(s => ({ ...s, imdb_direct: { ...s.imdb_direct, hour: Number(e.target.value) } }))} className="bg-gray-900 border border-gray-600 rounded p-1 w-16" /></label>}
+        <div className="text-sm text-gray-300">Bibliotheken (keine Auswahl = alle):</div>
+        <div className="flex flex-wrap gap-2">{libraries.filter(l => ['show', 'movie'].includes(l.type)).map(lib => {
+          const selected = (settings.imdb_direct?.libraries || []).includes(lib.name)
+          return <button key={lib.name} type="button" onClick={() => setSettings(s => {
+            const previous = s.imdb_direct?.libraries || []
+            return { ...s, imdb_direct: { ...s.imdb_direct, libraries: selected ? previous.filter(name => name !== lib.name) : [...previous, lib.name] } }
+          })} className={`rounded px-3 py-1 border text-xs ${selected ? 'bg-blue-700 border-blue-500' : 'border-gray-600'}`}>{selected ? '✓ ' : ''}{lib.name}</button>
+        })}</div>
+        <div className="flex gap-3 flex-wrap">
+          <button disabled={saving} onClick={() => saveSettings({ imdb_direct: settings.imdb_direct })} className="bg-gray-700 rounded px-4 py-2 text-sm">Einstellungen speichern</button>
+          <button disabled={!settings.imdb_direct?.enabled || imdbSync?.is_running || saving} onClick={refreshImdb} className="bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm">IMDb abrufen und Änderungen rendern</button>
+        </div>
+        {imdbSync && <p className="text-sm text-gray-300">{imdbSync.phase} · {imdbSync.scanned} Plex-Einträge mit IMDb-ID · {imdbSync.matched} IMDb-Werte · {imdbSync.changed} Änderungen · {imdbSync.rendered} gerendert · {imdbSync.failed} fehlgeschlagen{imdbSync.updated_at ? ` · Datenstand ${new Date(imdbSync.updated_at).toLocaleString()}` : ''}</p>}
+        {(imdbError || imdbSync?.error) && <p role="alert" className="text-red-300 text-sm">{imdbError || imdbSync.error}</p>}
+        <p className="text-xs text-gray-500">IMDb stellt den Datensatz für nicht kommerzielle Nutzung bereit; der Download kann entsprechend lange dauern.</p>
       </section>
 
       {/* ── Plex Webhook ──────────────────────────────────────────── */}

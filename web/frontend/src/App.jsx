@@ -36,6 +36,22 @@ function App() {
     checkProcessingStatus()
   }, [])
 
+  // Pick up jobs started by the scheduled IMDb refresh while another tab is open.
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      if (processing) return
+      try {
+        const response = await fetch('/api/status')
+        const current = await response.json()
+        if (current.is_processing) {
+          setProgressData(current)
+          setShowProgressBanner(true)
+        }
+      } catch (_) { /* The existing progress connection retries independently. */ }
+    }, 2500)
+    return () => clearInterval(timer)
+  }, [processing])
+
   useEffect(() => {
     if (!progressData) return
     if (progressData.is_processing || progressData.is_restoring) {
