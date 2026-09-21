@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 
-function ProcessingProgress({ onComplete, progressData, setProgressData }) {
+function ProcessingProgress({ onComplete, progressData, setProgressData, compact = false }) {
   const [ws, setWs] = useState(null)
   const wsRef = useRef(null)
   const [stopping, setStopping] = useState(false)
@@ -125,8 +125,20 @@ function ProcessingProgress({ onComplete, progressData, setProgressData }) {
     : 0
 
   const successRate = progressData.progress > 0
-    ? Math.round((successCount / progressData.progress) * 100)
+    ? Math.round((successCount / Math.max(1, progressData.progress - (progressData.skipped || 0))) * 100)
     : 0
+
+  if (compact) {
+    return <div className="fixed top-0 left-0 right-0 z-40 bg-gray-800 border-b border-blue-700 px-4 py-2 shadow-lg">
+      <div className="max-w-7xl mx-auto flex items-center gap-4 text-sm">
+        <span className={isActive ? 'text-blue-300' : 'text-green-300'}>{isActive ? '● Processing' : '✓ Last run'}</span>
+        <span className="text-gray-300">{progressData.current_library || 'Library'}: {progressData.progress}/{progressData.total}</span>
+        <div className="flex-1 bg-gray-700 rounded-full h-2"><div className="bg-blue-500 h-2 rounded-full" style={{width: `${progressPercent}%`}} /></div>
+        <span className="text-gray-400">{progressPercent}%</span>
+        <button onClick={onComplete} className="text-blue-300 hover:text-white">Open progress</button>
+      </div>
+    </div>
+  }
 
   return (
     <div className="space-y-6">
@@ -259,7 +271,7 @@ function ProcessingProgress({ onComplete, progressData, setProgressData }) {
           <div className="text-gray-400 mb-3">
             {isRestoring
               ? `Successfully restored ${successCount} out of ${progressData.total} items`
-              : `Successfully processed ${successCount} out of ${progressData.total} items`}
+              : `Successfully processed ${successCount} items (${progressData.failed || 0} failed, ${progressData.skipped || 0} skipped)`}
           </div>
           {countdown !== null && countdown > 0 && (
             <div className="flex items-center justify-center gap-4 mt-4">

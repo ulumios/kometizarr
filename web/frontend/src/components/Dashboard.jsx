@@ -23,11 +23,14 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
   const [force, setForce] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewResults, setPreviewResults] = useState(null)  // null = closed, [] = loading/empty
-  const [mediaOverlay, setMediaOverlay] = useState({ source: true, languages: true,
-    source_position: { x: 30, y: 30 }, languages_position: { x: 30, y: 30 }, font_percent: 4, opacity: 180 })
+  const [mediaOverlay, setMediaOverlay] = useState({ source: true, languages: true, status: false,
+    source_position: { x: 30, y: 30 }, languages_position: { x: 30, y: 30 }, status_position: { x: 30, y: 80 },
+    source_labels: { bluray: 'BluRay', prerelease: 'PreRelease' },
+    status_labels: { running: 'Läuft', ended: 'Abgeschlossen', canceled: 'Abgesetzt' }, font_percent: 4, opacity: 180 })
   const [testImage, setTestImage] = useState(null)
   const [testRating, setTestRating] = useState('8.4')
   const [testSource, setTestSource] = useState('BluRay')
+  const [testStatus, setTestStatus] = useState('')
   const [testLanguages, setTestLanguages] = useState(['DE', 'EN'])
   const [testEpisode, setTestEpisode] = useState(true)
   const [testError, setTestError] = useState('')
@@ -428,6 +431,12 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     savePositionsSoon({ media_overlay: next })
   }
 
+  const toggleMediaOverlay = (key) => {
+    const next = { ...mediaOverlay, [key]: !mediaOverlay[key] }
+    setMediaOverlay(next)
+    savePositionsSoon({ media_overlay: next })
+  }
+
   const setEpisodeOption = (key, value) => {
     const next = { ...mediaOverlay, [key]: Number(value) }
     setMediaOverlay(next)
@@ -440,15 +449,17 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     setTestError('')
     const form = new FormData()
     form.append('image', testImage)
-    form.append('options', JSON.stringify({ imdb: testRating, source: testSource,
-      languages: testLanguages, badge_style: badgeStyle,
+    form.append('options', JSON.stringify({ imdb: ratingSources.imdb ? testRating : '',
+      source: mediaOverlay.source ? testSource : '',
+      languages: mediaOverlay.languages ? testLanguages : [], badge_style: badgeStyle,
+      status: mediaOverlay.status ? testStatus : '',
       imdb_position: badgePositions.imdb, media_overlay: mediaOverlay,
       episode: testEpisode }))
     try {
       const res = await fetch('/api/preview-test', { method: 'POST', body: form })
       const result = await res.json()
       if (!res.ok) throw new Error(result.detail || 'Preview failed')
-      setPreviewResults([{ title: testImage.name, image: result.image, ratings: { imdb: testRating } }])
+      setPreviewResults([{ title: testImage.name, image: result.image, ratings: ratingSources.imdb ? { imdb: testRating } : {} }])
     } catch (error) {
       setTestError(error.message)
     } finally {
@@ -541,8 +552,8 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
       {/* Processing Options */}
       <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
         <h2 className="text-xl font-semibold mb-4">Processing Options</h2>
-        <fieldset className="bg-gray-900 rounded-lg p-4 mb-5 space-y-2">
-          <legend className="text-sm font-medium px-1">Manueller Serienlauf</legend>
+        <div className="bg-gray-900 rounded-lg p-4 mb-5 space-y-2">
+          <div className="text-sm font-medium">Manueller Serienlauf</div>
           <label className="flex items-center gap-2 text-sm">
             <input type="radio" name="episode-scope" checked={!includeEpisodes}
               onChange={() => setIncludeEpisodes(false)} /> Nur Serienposter
@@ -552,7 +563,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
               onChange={() => setIncludeEpisodes(true)} /> Serienposter und Episodenbilder
           </label>
           <p className="text-xs text-gray-400">Filmbibliotheken bleiben davon unberührt. Die Anzahl der Items und Backups wird passend zur Auswahl berechnet.</p>
-        </fieldset>
+        </div>
         <div className="bg-gray-900 rounded-lg p-4 mb-5 space-y-3">
           <h3 className="text-sm font-medium">Episode badge layout</h3>
           <p className="text-xs text-gray-400">Relative edge spacing keeps badges in the same corner when episode artwork has different pixel dimensions.</p>
@@ -584,12 +595,26 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
         </div>
         <div className="bg-gray-900 rounded-lg p-4 mb-5 space-y-4">
           <h3 className="font-medium">Exact overlay positions</h3>
-          <p className="text-xs text-gray-400">Pixel offsets on the original image. IMDb measures from top left; source from bottom left; languages from bottom right. Use the uploaded image below to verify the exact result.</p>
+          <p className="text-xs text-gray-400">Poster offsets use the original image; episode artwork uses a 1920 × 1080 canvas. IMDb measures from top left; source from bottom left; languages from bottom right. Use the uploaded image below to verify the result.</p>
+          <p className="text-xs text-gray-400">Languages come from Plex streams.</p>
+          <div className="flex flex-wrap gap-4 text-sm text-white">
+            {[['source', 'Source label (bottom left)'], ['languages', 'Episode languages (bottom right)'], ['status', 'Serienstatus']].map(([key, label]) => (
+              <label key={key} className="flex items-center gap-2">
+                <input type="checkbox" checked={mediaOverlay[key] ?? false} onChange={() => toggleMediaOverlay(key)} />
+                {label}
+              </label>
+            ))}
+          </div>
           {[
             ['IMDb', 'imdb'], ['TMDB', 'tmdb'], ['RT Critic', 'rt_critic'], ['RT Audience', 'rt_audience'],
-            ['BluRay / PreRelease', 'source_position'],
+            ['BluRay / PreRelease', 'source_position'], ['Serienstatus', 'status_position'],
             ['Episode languages', 'languages_position'],
-          ].map(([label, key]) => (
+          ].filter(([, key]) => {
+            if (key === 'source_position') return mediaOverlay.source
+            if (key === 'languages_position') return mediaOverlay.languages
+            if (key === 'status_position') return mediaOverlay.status
+            return ratingSources[key]
+          }).map(([label, key]) => (
             <div key={key} className="space-y-2 border-t border-gray-700 pt-3">
               <div className="text-sm text-white">{label}</div>
               {['x', 'y'].map(axis => {
@@ -632,6 +657,9 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
               <label>IMDb <input type="number" min="0" max="10" step="0.1" value={testRating} onChange={e => setTestRating(e.target.value)} className="w-16 bg-gray-800 border border-gray-700 rounded p-1" /></label>
               <label>Source <select value={testSource} onChange={e => setTestSource(e.target.value)} className="bg-gray-800 border border-gray-700 rounded p-1">
                 <option value="">None</option><option>BluRay</option><option>PreRelease</option>
+              </select></label>
+              <label>Status <select value={testStatus} onChange={e => setTestStatus(e.target.value)} className="bg-gray-800 border border-gray-700 rounded p-1">
+                <option value="">None</option><option value="running">Läuft</option><option value="ended">Abgeschlossen</option><option value="canceled">Abgesetzt</option>
               </select></label>
             </div>
             <div className="flex flex-wrap gap-3 text-xs">Audio languages:
@@ -1014,6 +1042,36 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                   🍿 RT Audience (0-100%)
                 </label>
               </div>
+              <div className="flex items-center">
+                <input type="checkbox" checked={mediaOverlay.source} onChange={() => toggleMediaOverlay('source')} className="mr-2" id="source-checkbox" />
+                <label htmlFor="source-checkbox" className="text-sm">🏷️ Source badge (BluRay / PreRelease)</label>
+              </div>
+              <div className="flex items-center">
+                <input type="checkbox" checked={mediaOverlay.languages} onChange={() => toggleMediaOverlay('languages')} className="mr-2" id="languages-checkbox" />
+                <label htmlFor="languages-checkbox" className="text-sm">🌐 Episode languages</label>
+              </div>
+              <div className="flex items-center">
+                <input type="checkbox" checked={mediaOverlay.status} onChange={() => toggleMediaOverlay('status')} className="mr-2" id="status-checkbox" />
+                <label htmlFor="status-checkbox" className="text-sm">📺 Serienstatus</label>
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+              {[['bluray', 'BluRay'], ['prerelease', 'PreRelease']].map(([key, label]) => (
+                <label key={key} className="text-gray-400">{label} label
+                  <input value={mediaOverlay.source_labels?.[key] ?? label} onChange={e => {
+                    const next = { ...mediaOverlay, source_labels: { ...mediaOverlay.source_labels, [key]: e.target.value } }
+                    setMediaOverlay(next); savePositionsSoon({ media_overlay: next })
+                  }} className="block w-full mt-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white" />
+                </label>
+              ))}
+              {[['running', 'Läuft'], ['ended', 'Abgeschlossen'], ['canceled', 'Abgesetzt']].map(([key, label]) => (
+                <label key={key} className="text-gray-400">Status: {key}
+                  <input value={mediaOverlay.status_labels?.[key] ?? label} onChange={e => {
+                    const next = { ...mediaOverlay, status_labels: { ...mediaOverlay.status_labels, [key]: e.target.value } }
+                    setMediaOverlay(next); savePositionsSoon({ media_overlay: next })
+                  }} className="block w-full mt-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white" />
+                </label>
+              ))}
             </div>
             {!Object.values(ratingSources).some(v => v) && (
               <div className="mt-2 p-3 bg-red-900/20 border border-red-700/50 rounded text-sm text-red-300">

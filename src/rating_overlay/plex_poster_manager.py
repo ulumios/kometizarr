@@ -17,7 +17,7 @@ from .rating_fetcher import RatingFetcher
 from .badge_generator import BadgeGenerator
 from .overlay_composer import OverlayComposer
 from .multi_rating_badge import MultiRatingBadge
-from .media_badges import source_label, audio_languages, draw_media_badges, episode_overlay_options, prepare_episode_canvas
+from .media_badges import source_label, audio_languages, draw_media_badges, episode_overlay_options, prepare_episode_canvas, show_status_label
 from ..utils.logger import ProgressTracker, print_header, print_subheader, print_summary
 
 logger = logging.getLogger(__name__)
@@ -288,10 +288,13 @@ class PlexPosterManager:
                 badge_positions=badge_positions  # Pass individual badge positions if provided
             )
 
-            source = source_label(movie) if self.media_overlay.get('source', False) else None
+            source = source_label(movie, self.media_overlay) if self.media_overlay.get('source', False) else None
             languages = audio_languages(movie) if movie.type == 'episode' and self.media_overlay.get('languages', False) else []
-            if source or languages:
-                draw_media_badges(str(overlay_path), source, languages, self.media_overlay)
+            status = None
+            if getattr(movie, 'type', None) == 'show' and self.media_overlay.get('status', False) and tmdb_id:
+                status = show_status_label(self.rating_fetcher.fetch_tmdb_status(tmdb_id), self.media_overlay)
+            if source or languages or status:
+                draw_media_badges(str(overlay_path), source, languages, self.media_overlay, status=status)
 
             # Save overlay version to backup
             self.backup_manager.save_overlay_poster(
@@ -345,7 +348,7 @@ class PlexPosterManager:
                     img.verify()
             ratings = self._extract_plex_ratings(episode)
             ratings = {k: v for k, v in ratings.items() if self.rating_sources.get(k, True)}
-            source = source_label(episode) if self.media_overlay.get('source', False) else None
+            source = source_label(episode, self.media_overlay) if self.media_overlay.get('source', False) else None
             languages = audio_languages(episode) if self.media_overlay.get('languages', False) else []
             episode_style, episode_positions, episode_media = episode_overlay_options(
                 self.badge_style, badge_positions, self.media_overlay)

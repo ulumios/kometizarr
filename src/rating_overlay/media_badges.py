@@ -4,16 +4,28 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 
-def source_label(item):
+def source_label(item, settings=None):
     """Prefer BluRay; otherwise label known low quality release sources."""
+    labels = (settings or {}).get('source_labels') or {}
     for media in getattr(item, 'media', []) or []:
         for part in getattr(media, 'parts', []) or []:
             name = Path(getattr(part, 'file', '') or '').name
             if re.search(r'(?i)(?:^|[. _-])(?:blu[ ._-]?ray|bdrip|brrip|bdremux)(?:[. _-]|$)', name):
-                return 'BluRay'
+                return labels.get('bluray', 'BluRay')
             if re.search(r'(?i)(?:^|[. _-])(?:cam|hdcam|ts|telesync|tc|telecine|scr|screener|dvdscr|r5)(?:[. _-]|$)', name):
-                return 'PreRelease'
+                return labels.get('prerelease', 'PreRelease')
     return None
+
+
+def show_status_label(status, settings=None):
+    """Map TMDb's series state to the user-facing poster label."""
+    key = {'Returning Series': 'running', 'In Production': 'running',
+           'Planned': 'running', 'Pilot': 'running', 'Canceled': 'canceled',
+           'Ended': 'ended'}.get(status)
+    if not key:
+        return None
+    defaults = {'running': 'Läuft', 'ended': 'Abgeschlossen', 'canceled': 'Abgesetzt'}
+    return ((settings or {}).get('status_labels') or {}).get(key, defaults[key])
 
 
 def audio_languages(item):
@@ -52,15 +64,15 @@ def episode_overlay_options(badge_style=None, badge_positions=None, media_settin
     positions = {}
     for source, pos in (badge_positions or {'imdb': {'x': 1.2, 'y': 1.2}}).items():
         positions[source] = {
-            'x': float(pos['x_px']) / 10 if 'x_px' in pos else float(pos.get('x', 1.2)),
-            'y': float(pos['y_px']) / 14 if 'y_px' in pos else float(pos.get('y', 1.2)),
+            **({'x_px': float(pos['x_px'])} if 'x_px' in pos else {'x': float(pos.get('x', 1.2))}),
+            **({'y_px': float(pos['y_px'])} if 'y_px' in pos else {'y': float(pos.get('y', 1.2))}),
         }
     media['episode'] = True
     media['font_percent'] = float(media.get('episode_font_percent', 2.8))
     return style, positions, media
 
 
-def draw_media_badges(path, source=None, languages=(), settings=None):
+def draw_media_badges(path, source=None, languages=(), settings=None, status=None):
     settings = settings or {}
     image = Image.open(path).convert('RGBA')
     width, height = image.size
@@ -70,16 +82,16 @@ def draw_media_badges(path, source=None, languages=(), settings=None):
     draw = ImageDraw.Draw(image)
     margin = int(width * 0.03)
     def offset(key):
-        if episode:
+        if episode and key not in settings:
             edge = max(0.0, float(settings.get('episode_edge_percent', 1.2))) / 100
             return round(width * edge), round(height * edge)
         pos = settings.get(key) or {}
         return max(0, int(pos.get('x', margin))), max(0, int(pos.get('y', margin)))
-    def badge(label, left):
+    def badge(label, left, key='source_position'):
         box = draw.textbbox((0, 0), label, font=font)
         pad = max(2, size // 5) if episode else max(5, size // 3)
         bw, bh = box[2] + 2 * pad, box[3] - box[1] + 2 * pad
-        dx, dy = offset('source_position')
+        dx, dy = offset(key)
         x = min(width - bw, dx) if left else width - dx - bw
         y = max(0, height - dy - bh)
         draw.rounded_rectangle((x, y, x + bw, y + bh), radius=pad,
@@ -87,6 +99,8 @@ def draw_media_badges(path, source=None, languages=(), settings=None):
         draw.text((x + pad, y + pad - box[1]), label, font=font, fill='white')
     if source:
         badge(source, True)
+    if status and not episode:
+        badge(status, True, 'status_position')
     if languages:
         pad = max(2, size // 5) if episode else max(5, size // 3)
         flag_w, flag_h = int(size * (1.1 if episode else 1.35)), int(size * (.7 if episode else .85))

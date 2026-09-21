@@ -67,7 +67,6 @@ function App() {
         {processing ? (
           <ProcessingProgress
             onComplete={() => {
-              setProgressData(null) // Clear old progress data
               setProcessing(false)
             }}
             progressData={progressData}
@@ -118,7 +117,7 @@ function App() {
                   setProgressData(null) // Clear old data (handles backend rebuilds)
                   setProcessing(true)
                 }}
-                onLibrarySelect={setSelectedLibrary}
+            onLibrarySelect={setSelectedLibrary}
               />
             ) : activeTab === 'collections' ? (
               <Collections selectedLibrary={selectedLibrary} />
@@ -128,6 +127,11 @@ function App() {
           </>
         )}
       </main>
+
+      {progressData && !processing && (
+        <ProcessingProgress compact progressData={progressData} setProgressData={setProgressData}
+          onComplete={() => setProcessing(true)} />
+      )}
 
       {/* Footer */}
       <footer className="bg-gray-800 border-t border-gray-700 mt-12">

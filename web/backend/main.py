@@ -552,12 +552,17 @@ async def preview_test(image: UploadFile = File(...), options: str = Form(...)):
             rating = float(rating)
             if not 0 <= rating <= 10:
                 raise ValueError('IMDb rating must be between 0 and 10')
-        source = data.get('source') if data.get('source') in ('BluRay', 'PreRelease') else None
+        source_key = data.get('source') if data.get('source') in ('BluRay', 'PreRelease') else None
         valid = {'DE': '🇩🇪', 'EN': '🇬🇧', 'FR': '🇫🇷', 'ES': '🇪🇸', 'IT': '🇮🇹', 'JA': '🇯🇵'}
         languages = [(code, valid[code]) for code in data.get('languages', []) if code in valid]
         badge_style = data.get('badge_style')
         badge_positions = {'imdb': data.get('imdb_position') or {'x': 2, 'y': 2}}
         media_style = data.get('media_overlay') or {}
+        source = None
+        if source_key:
+            source = (media_style.get('source_labels') or {}).get(
+                'bluray' if source_key == 'BluRay' else 'prerelease', source_key)
+        status = (media_style.get('status_labels') or {}).get(data.get('status')) if data.get('status') else None
         if data.get('episode'):
             badge_style, badge_positions, media_style = episode_overlay_options(
                 badge_style, badge_positions, media_style)
@@ -575,8 +580,8 @@ async def preview_test(image: UploadFile = File(...), options: str = Form(...)):
             else:
                 with Image.open(original_path) as canvas:
                     canvas.save(output_path, 'JPEG', quality=95)
-            if source or languages:
-                draw_media_badges(str(output_path), source, languages, media_style)
+            if source or languages or status:
+                draw_media_badges(str(output_path), source, languages, media_style, status=status)
             return {'image': base64.b64encode(output_path.read_bytes()).decode(),
                     'width': 1920 if data.get('episode') else original.width,
                     'height': 1080 if data.get('episode') else original.height}
@@ -628,11 +633,16 @@ async def preview_posters(request: PreviewRequest):
                 if request.rating_sources:
                     ratings = {k: v for k, v in ratings.items() if request.rating_sources.get(k, True)}
 
-                from src.rating_overlay.media_badges import source_label, audio_languages, draw_media_badges
+                from src.rating_overlay.media_badges import source_label, audio_languages, draw_media_badges, show_status_label
                 media_options = request.media_overlay or _load_settings().get('media_overlay', {})
-                source = source_label(item) if media_options.get('source') else None
+                source = source_label(item, media_options) if media_options.get('source') else None
                 languages = audio_languages(item) if item.type == 'episode' and media_options.get('languages') else []
-                if not ratings and not source and not languages:
+                status = None
+                if item.type == 'show' and media_options.get('status'):
+                    tmdb_id = manager._extract_tmdb_id(getattr(item, 'guids', []))
+                    if tmdb_id:
+                        status = show_status_label(manager.rating_fetcher.fetch_tmdb_status(tmdb_id), media_options)
+                if not ratings and not source and not languages and not status:
                     continue
                 style = manager.badge_style
                 positions = request.badge_positions
@@ -677,8 +687,8 @@ async def preview_posters(request: PreviewRequest):
                     from PIL import Image
                     with Image.open(poster_path) as img:
                         img.convert('RGB').save(output_path, 'JPEG')
-                if source or languages:
-                    draw_media_badges(output_path, source, languages, media_options)
+                if source or languages or status:
+                    draw_media_badges(output_path, source, languages, media_options, status=status)
 
                 with open(output_path, 'rb') as f:
                     image_b64 = base64.b64encode(f.read()).decode()
@@ -1001,7 +1011,10 @@ def _load_settings() -> dict:
         "cron_normal": {"enabled": False, "libraries": [], "schedule": "0 3 * * *"},
         "cron_force":  {"enabled": False, "libraries": [], "schedule": "0 3 * * 0"},
         "webhook": {"enabled": False, "libraries": []},
-        "media_overlay": {"source": True, "languages": True, "font_percent": 4, "opacity": 180},
+        "media_overlay": {"source": True, "languages": True, "status": False, "font_percent": 4, "opacity": 180,
+                           "source_labels": {"bluray": "BluRay", "prerelease": "PreRelease"},
+                           "status_labels": {"running": "Läuft", "ended": "Abgeschlossen", "canceled": "Abgesetzt"},
+                           "status_position": {"x": 30, "y": 80}},
     }
     if not SETTINGS_PATH.exists():
         return defaults
@@ -1018,6 +1031,7 @@ def _load_settings() -> dict:
         data["webhook"]["libraries"] = [] if not old or old == "__all__" else [old]
     for key, value in defaults.items():
         data.setdefault(key, value)
+    data['media_overlay'] = {**defaults['media_overlay'], **(data.get('media_overlay') or {})}
     return data
 
 

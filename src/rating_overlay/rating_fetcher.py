@@ -62,6 +62,16 @@ class RatingFetcher:
             print(f"✗ Error fetching TMDB rating: {e}")
             return None
 
+    def fetch_tmdb_status(self, tmdb_id: int) -> Optional[str]:
+        """Return the current TMDB TV status."""
+        try:
+            response = requests.get(f"{self.TMDB_BASE_URL}/tv/{tmdb_id}?api_key={self.tmdb_api_key}", timeout=20)
+            response.raise_for_status()
+            return response.json().get('status')
+        except Exception as e:
+            print(f"✗ Error fetching TMDB status: {e}")
+            return None
+
     def fetch_tmdb_episode_rating(self, tmdb_id: int, season: int, episode: int) -> Optional[Dict]:
         """
         Fetch TMDB rating for a specific TV episode
