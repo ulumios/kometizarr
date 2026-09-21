@@ -34,6 +34,16 @@ def audio_languages(item):
     return [codes[code] for code in result]
 
 
+def prepare_episode_canvas(source_path, destination_path):
+    """Match Kometa's fixed 1920 x 1080 episode overlay canvas."""
+    from PIL import ImageOps
+    with Image.open(source_path) as source:
+        image = ImageOps.exif_transpose(source).convert('RGB')
+        image = image.resize((1920, 1080), Image.Resampling.LANCZOS)
+        image.save(destination_path, 'JPEG', quality=95)
+    return destination_path
+
+
 def episode_overlay_options(badge_style=None, badge_positions=None, media_settings=None):
     """Resolve episode sizes and normalize legacy pixel coordinates to image ratios."""
     media = dict(media_settings or {})

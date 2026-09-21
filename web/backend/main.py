@@ -533,7 +533,7 @@ async def preview_test(image: UploadFile = File(...), options: str = Form(...)):
     import tempfile
     from pathlib import Path
     from PIL import Image, UnidentifiedImageError
-    from src.rating_overlay.media_badges import draw_media_badges, episode_overlay_options
+    from src.rating_overlay.media_badges import draw_media_badges, episode_overlay_options, prepare_episode_canvas
 
     try:
         data = json.loads(options)
@@ -564,17 +564,22 @@ async def preview_test(image: UploadFile = File(...), options: str = Form(...)):
         with tempfile.TemporaryDirectory(prefix='kometizarr-preview-') as tmp:
             original_path, output_path = Path(tmp) / 'original.jpg', Path(tmp) / 'result.jpg'
             original.save(original_path, 'JPEG', quality=95)
+            if data.get('episode'):
+                prepare_episode_canvas(original_path, Path(tmp) / 'episode.jpg')
+                original_path = Path(tmp) / 'episode.jpg'
             if rating is not None and rating != '':
                 MultiRatingBadge().apply_to_poster(
                     str(original_path), {'imdb': rating}, str(output_path),
                     badge_style=badge_style,
                     badge_positions=badge_positions)
             else:
-                original.save(output_path, 'JPEG', quality=95)
+                with Image.open(original_path) as canvas:
+                    canvas.save(output_path, 'JPEG', quality=95)
             if source or languages:
                 draw_media_badges(str(output_path), source, languages, media_style)
             return {'image': base64.b64encode(output_path.read_bytes()).decode(),
-                    'width': original.width, 'height': original.height}
+                    'width': 1920 if data.get('episode') else original.width,
+                    'height': 1080 if data.get('episode') else original.height}
     except (ValueError, TypeError, UnidentifiedImageError, json.JSONDecodeError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -654,6 +659,13 @@ async def preview_posters(request: PreviewRequest):
                     tmp_src = Path(f'/tmp/kometizarr_prev_src_{item.ratingKey}.jpg')
                     tmp_src.write_bytes(response.content)
                     poster_path = str(tmp_src)
+
+                # Render onto the same 1920 x 1080 episode canvas as the upload.
+                if item.type == 'episode':
+                    from src.rating_overlay.media_badges import prepare_episode_canvas
+                    canvas_path = f'/tmp/kometizarr_prev_canvas_{item.ratingKey}.jpg'
+                    prepare_episode_canvas(poster_path, canvas_path)
+                    poster_path = canvas_path
 
                 # Apply overlay (no upload)
                 output_path = f'/tmp/kometizarr_prev_{item.ratingKey}.jpg'

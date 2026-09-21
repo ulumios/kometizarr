@@ -17,7 +17,7 @@ from .rating_fetcher import RatingFetcher
 from .badge_generator import BadgeGenerator
 from .overlay_composer import OverlayComposer
 from .multi_rating_badge import MultiRatingBadge
-from .media_badges import source_label, audio_languages, draw_media_badges, episode_overlay_options
+from .media_badges import source_label, audio_languages, draw_media_badges, episode_overlay_options, prepare_episode_canvas
 from ..utils.logger import ProgressTracker, print_header, print_subheader, print_summary
 
 logger = logging.getLogger(__name__)
@@ -326,6 +326,7 @@ class PlexPosterManager:
             original = backup / 'original.jpg'
             rendered = backup / 'overlay.jpg'
             pending = backup / 'overlay.pending.jpg'
+            canvas = backup / 'canvas.pending.jpg'
             if rendered.exists() and not force:
                 return None
             if not original.exists():
@@ -352,12 +353,13 @@ class PlexPosterManager:
                 return None
             if self.dry_run:
                 return True
+            prepare_episode_canvas(original, canvas)
             if ratings:
                 self.multi_rating_badge.apply_to_poster(
-                    str(original), ratings, str(pending), badge_style=episode_style,
+                    str(canvas), ratings, str(pending), badge_style=episode_style,
                     badge_positions=episode_positions)
             else:
-                with Image.open(original) as img:
+                with Image.open(canvas) as img:
                     img.convert('RGB').save(pending, 'JPEG', quality=95)
             if source or languages:
                 draw_media_badges(str(pending), source, languages, episode_media)
@@ -369,6 +371,9 @@ class PlexPosterManager:
             if 'pending' in locals():
                 pending.unlink(missing_ok=True)
             return False
+        finally:
+            if 'canvas' in locals():
+                canvas.unlink(missing_ok=True)
 
     def process_library(
         self,
