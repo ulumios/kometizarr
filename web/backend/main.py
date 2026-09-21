@@ -1085,22 +1085,22 @@ async def _webhook_queue_worker():
 
 DEFAULT_BADGE_POSITIONS = {
     "tmdb":        {"x": 2,  "y": 2},
-    "imdb":        {"x": 70, "y": 2},
+    "imdb":        {"x": 2, "y": 2},
     "rt_critic":   {"x": 2,  "y": 78},
     "rt_audience": {"x": 70, "y": 78},
 }
 
 DEFAULT_BADGE_STYLE = {
-    "individual_badge_size": 12,
+    "individual_badge_size": 9,
     "font_size_multiplier": 1.0,
     "logo_size_multiplier": 1.0,
-    "rating_color": "#FFD700",
-    "background_opacity": 128,
-    "font_family": "DejaVu Sans Bold",
+    "rating_color": "#FFFFFF",
+    "background_opacity": 215,
+    "font_family": "Liberation Sans Bold",
 }
 
 DEFAULT_RATING_SOURCES = {
-    "tmdb": True, "imdb": True, "rt_critic": True, "rt_audience": True,
+    "tmdb": False, "imdb": True, "rt_critic": False, "rt_audience": False,
 }
 
 

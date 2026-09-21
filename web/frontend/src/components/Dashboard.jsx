@@ -44,12 +44,12 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     // Load from localStorage or use defaults
     const saved = localStorage.getItem('kometizarr_badge_style')
     return saved ? JSON.parse(saved) : {
-      individual_badge_size: 12,  // Individual badge size (% of poster width)
+      individual_badge_size: 9,   // Individual badge size (% of poster width)
       font_size_multiplier: 1.0,  // Multiplier for font sizes
       logo_size_multiplier: 1.0,  // Multiplier for logo within badge
-      rating_color: '#FFD700',    // Gold color (default)
-      background_opacity: 128,    // 0-255, default 128 (50%)
-      font_family: 'DejaVu Sans Bold'  // Font family
+      rating_color: '#FFFFFF',
+      background_opacity: 215,
+      font_family: 'Liberation Sans Bold'
     }
   })
 
@@ -622,7 +622,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                     {/* Individual Badges - dynamically sized and styled */}
                     {(() => {
                       // Calculate badge dimensions based on style settings
-                      const badgeSizePercent = badgeStyle.individual_badge_size || 12
+                      const badgeSizePercent = badgeStyle.individual_badge_size || 9
                       const badgeWidth = (badgeSizePercent / 100) * 120  // Scale to SVG viewBox
                       const badgeHeight = badgeWidth * 1.4  // 1.4 aspect ratio
                       const logoMultiplier = badgeStyle.logo_size_multiplier || 1.0
@@ -648,7 +648,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                         return fontName.includes('Bold') ? 'bold' : 'normal'
                       }
 
-                      const fontFamily = getFontFamily(badgeStyle.font_family || 'DejaVu Sans Bold')
+                      const fontFamily = getFontFamily(badgeStyle.font_family || 'Liberation Sans Bold')
                       const fontStyle = getFontStyle(badgeStyle.font_family || 'DejaVu Sans Bold')
                       const fontWeight = getFontWeight(badgeStyle.font_family || 'DejaVu Sans Bold')
 
@@ -671,10 +671,10 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                               onMouseDown={(e) => handleBadgeMouseDown(e, 'imdb')}
                               transform={`translate(${badgePositions.imdb.x_px != null ? badgePositions.imdb.x_px / 1000 * 120 : badgePositions.imdb.x / 100 * 120}, ${badgePositions.imdb.y_px != null ? badgePositions.imdb.y_px / 1400 * 168 : badgePositions.imdb.y / 100 * 168})`}
                             >
-                              <rect width={badgeWidth} height={badgeWidth * 1.04} fill="#0f1116" fillOpacity=".86" rx="2" />
+                              <rect width={badgeWidth} height={badgeWidth * 1.04} fill="#0f1116" fillOpacity={(badgeStyle.background_opacity ?? 215) / 255} rx="2" />
                               <rect x={badgeWidth * .05} y={badgeWidth * .08} width={badgeWidth * .90} height={badgeWidth * .42} fill="#f5c518" rx="1" />
                               <text x={badgeWidth / 2} y={badgeWidth * .29} fontSize={badgeWidth * .23} fill="#111" textAnchor="middle" dominantBaseline="middle" fontFamily="sans-serif" fontWeight="bold" className="pointer-events-none select-none">IMDb</text>
-                              <text x={badgeWidth / 2} y={badgeWidth * .78} fontSize={badgeWidth * .31} fill="white" textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontWeight="bold" className="pointer-events-none select-none">8.4</text>
+                              <text x={badgeWidth / 2} y={badgeWidth * .78} fontSize={badgeWidth * .31 * (badgeStyle.font_size_multiplier || 1)} fill={badgeStyle.rating_color || '#FFFFFF'} textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontWeight="bold" className="pointer-events-none select-none">8.4</text>
                             </g>
                           )}
 
@@ -770,20 +770,15 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                   {/* Badge Size */}
                   <div>
                     <label className="text-xs text-gray-400 block mb-1">
-                      Badge Size: {Math.round(((badgeStyle.individual_badge_size - 8) / (30 - 8)) * 100)}%
+                      Badge Size: {badgeStyle.individual_badge_size}% of image width
                     </label>
                     <input
                       type="range"
-                      min="0"
-                      max="100"
+                      min="5"
+                      max="30"
                       step="1"
-                      value={Math.round(((badgeStyle.individual_badge_size - 8) / (30 - 8)) * 100)}
-                      onChange={(e) => {
-                        // Map 0-100 slider to 8-30% actual badge size
-                        const sliderValue = parseInt(e.target.value)
-                        const actualSize = 8 + (sliderValue / 100) * (30 - 8)
-                        updateBadgeStyle('individual_badge_size', Math.round(actualSize))
-                      }}
+                      value={badgeStyle.individual_badge_size}
+                      onChange={(e) => updateBadgeStyle('individual_badge_size', parseInt(e.target.value))}
                       className="w-full accent-blue-500"
                     />
                   </div>
@@ -832,7 +827,8 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                         onChange={(e) => updateBadgeStyle('font_family', e.target.value)}
                         className="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white"
                       >
-                        <option value="DejaVu Sans Bold">Sans Bold (Default)</option>
+                        <option value="Liberation Sans Bold">Arial-like Bold (reference)</option>
+                        <option value="DejaVu Sans Bold">DejaVu Sans Bold</option>
                         <option value="DejaVu Sans">Sans Regular</option>
                         <option value="DejaVu Sans Bold Oblique">Sans Bold Italic</option>
                         <option value="DejaVu Sans Oblique">Sans Italic</option>
@@ -883,19 +879,20 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                   <button
                     onClick={() => {
                       const defaults = {
-                        individual_badge_size: 12,
+                        individual_badge_size: 9,
                         font_size_multiplier: 1.0,
                         logo_size_multiplier: 1.0,
-                        rating_color: '#FFD700',
-                        background_opacity: 128,
-                        font_family: 'DejaVu Sans Bold'
+                        rating_color: '#FFFFFF',
+                        background_opacity: 215,
+                        font_family: 'Liberation Sans Bold'
                       }
                       setBadgeStyle(defaults)
                       localStorage.setItem('kometizarr_badge_style', JSON.stringify(defaults))
+                      persistBadgeSettings({ badge_style: defaults })
                     }}
                     className="w-full text-xs px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded border border-gray-700 transition"
                   >
-                    ↺ Reset Styling
+                    ↺ Apply reference defaults
                   </button>
                 </div>
               </div>

@@ -15,6 +15,7 @@ class MultiRatingBadge:
 
     # Font family to file path mapping
     FONT_PATHS = {
+        'Liberation Sans Bold': '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf',
         'DejaVu Sans Bold': '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
         'DejaVu Sans': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
         'DejaVu Sans Bold Oblique': '/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf',
@@ -372,11 +373,11 @@ class MultiRatingBadge:
 
     def _create_imdb_badge(self, rating: float, poster_width: int, style: Dict[str, Any]) -> Image.Image:
         """Compact IMDb mark and score on one dark rounded tile."""
-        width = max(36, round(poster_width * style.get('individual_badge_size', 12) / 100))
+        width = max(36, round(poster_width * style.get('individual_badge_size', 9) / 100))
         height = round(width * 1.04)
         badge = Image.new('RGBA', (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(badge)
-        opacity = max(185, int(style.get('background_opacity', 210)))
+        opacity = max(0, min(255, int(style.get('background_opacity', 215))))
         draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=round(width * .14),
                                fill=(15, 17, 22, opacity))
 
@@ -396,13 +397,13 @@ class MultiRatingBadge:
                 badge.alpha_composite(logo, ((width - logo_width) // 2, round(height * .08)))
 
         font_size = max(12, round(width * .31 * float(style.get('font_size_multiplier', 1.0))))
-        font_path = self.FONT_PATHS.get(style.get('font_family'), self.FONT_PATHS['DejaVu Sans Bold'])
+        font_path = self.FONT_PATHS.get(style.get('font_family', 'Liberation Sans Bold'), self.FONT_PATHS['Liberation Sans Bold'])
         try:
             font = ImageFont.truetype(font_path, font_size)
         except OSError:
-            font = ImageFont.load_default()
+            font = ImageFont.truetype(self.FONT_PATHS['DejaVu Sans Bold'], font_size)
         draw.text((width / 2, height * .75), f'{rating:.1f}', font=font,
-                  fill='white', anchor='mm', stroke_width=0)
+                  fill=style.get('rating_color', '#FFFFFF'), anchor='mm', stroke_width=0)
         return badge
 
     def _draw_rating_row(

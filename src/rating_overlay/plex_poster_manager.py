@@ -325,6 +325,7 @@ class PlexPosterManager:
             backup.mkdir(parents=True, exist_ok=True)
             original = backup / 'original.jpg'
             rendered = backup / 'overlay.jpg'
+            pending = backup / 'overlay.pending.jpg'
             if rendered.exists() and not force:
                 return None
             if not original.exists():
@@ -332,7 +333,11 @@ class PlexPosterManager:
                 if not thumb:
                     logger.warning('Episode %s has no thumbnail', key)
                     return False
-                response = self.server._session.get(self.server.url(thumb), timeout=30)
+                response = self.server._session.get(
+                    self.server.url(thumb),
+                    headers={'X-Plex-Token': self.plex_token},
+                    timeout=30,
+                )
                 response.raise_for_status()
                 original.write_bytes(response.content)
                 with Image.open(original) as img:
@@ -347,17 +352,20 @@ class PlexPosterManager:
                 return True
             if ratings:
                 self.multi_rating_badge.apply_to_poster(
-                    str(original), ratings, str(rendered), badge_style=self.badge_style,
+                    str(original), ratings, str(pending), badge_style=self.badge_style,
                     badge_positions=badge_positions or {'imdb': {'x': 3, 'y': 3}})
             else:
                 with Image.open(original) as img:
-                    img.convert('RGB').save(rendered, 'JPEG', quality=95)
+                    img.convert('RGB').save(pending, 'JPEG', quality=95)
             if source or languages:
-                draw_media_badges(str(rendered), source, languages, self.media_overlay)
-            episode.uploadThumb(filepath=str(rendered))
+                draw_media_badges(str(pending), source, languages, self.media_overlay)
+            episode.uploadPoster(filepath=str(pending))
+            pending.replace(rendered)
             return True
         except Exception:
             logger.exception('Failed to process episode %s', getattr(episode, 'ratingKey', '?'))
+            if 'pending' in locals():
+                pending.unlink(missing_ok=True)
             return False
 
     def process_library(
