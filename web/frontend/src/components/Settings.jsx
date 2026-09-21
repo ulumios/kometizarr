@@ -356,6 +356,25 @@ export default function Settings() {
   return (
     <div className="max-w-2xl mx-auto space-y-8">
 
+      <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
+        <h2 className="text-white font-semibold">Media overlays</h2>
+        <p className="text-xs text-gray-400">BluRay from the filename; PreRelease for CAM, TS, TC, screener or R5. Other sources display no label. Episode audio languages come from Plex streams.</p>
+        {[['source', 'Source label (bottom left)'], ['languages', 'Episode languages (bottom right)']].map(([key, label]) => (
+          <label key={key} className="flex items-center gap-3 text-sm text-white">
+            <input type="checkbox" checked={settings.media_overlay?.[key] ?? true}
+              onChange={e => setSettings(s => ({ ...s, media_overlay: { ...s.media_overlay, [key]: e.target.checked } }))} />
+            {label}
+          </label>
+        ))}
+        <label className="block text-sm text-gray-300">Font size (% of image width)
+          <input type="number" min="2" max="12" value={settings.media_overlay?.font_percent ?? 4}
+            onChange={e => setSettings(s => ({ ...s, media_overlay: { ...s.media_overlay, font_percent: Number(e.target.value) } }))}
+            className="block mt-1 w-24 px-2 py-1 bg-gray-900 border border-gray-600 rounded" />
+        </label>
+        <button onClick={() => saveSettings({ media_overlay: settings.media_overlay })} disabled={saving}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm text-white">Save media overlays</button>
+      </section>
+
       {/* ── Scheduled Processing ──────────────────────────────────── */}
       <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
         <div>

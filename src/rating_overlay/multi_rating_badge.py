@@ -566,8 +566,8 @@ class MultiRatingBadge:
                 )
 
                 # Convert percentage to pixels
-                badge_x = int((x_percent / 100) * poster_width)
-                badge_y = int((y_percent / 100) * poster_height)
+                badge_x = int(pos['x_px']) if 'x_px' in pos else int((x_percent / 100) * poster_width)
+                badge_y = int(pos['y_px']) if 'y_px' in pos else int((y_percent / 100) * poster_height)
 
                 # Composite badge onto poster
                 poster.paste(badge, (badge_x, badge_y), badge)

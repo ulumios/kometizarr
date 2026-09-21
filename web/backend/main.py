@@ -1,7 +1,7 @@
 """
 Kometizarr Web UI - FastAPI Backend
 """
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -16,6 +16,7 @@ from datetime import datetime
 sys.path.insert(0, '/app/kometizarr')
 
 from src.rating_overlay.plex_poster_manager import PlexPosterManager
+from src.rating_overlay.multi_rating_badge import MultiRatingBadge
 from src.collection_manager.manager import CollectionManager
 from src.utils.logger import setup_logger
 
@@ -88,6 +89,7 @@ class ProcessRequest(BaseModel):
     rating_sources: Optional[Dict[str, bool]] = None  # Which ratings to show
     badge_style: Optional[Dict[str, Any]] = None  # Badge styling options
     rating_key: Optional[str] = None  # If set, process only this specific Plex item
+    media_overlay: Optional[Dict[str, Any]] = None
 
 
 class ProcessBatchRequest(BaseModel):
@@ -97,6 +99,7 @@ class ProcessBatchRequest(BaseModel):
     force: bool = False
     rating_sources: Optional[Dict[str, bool]] = None
     badge_style: Optional[Dict[str, Any]] = None
+    media_overlay: Optional[Dict[str, Any]] = None
 
 
 class LibraryStats(BaseModel):
@@ -205,6 +208,7 @@ async def start_processing_batch(request: ProcessBatchRequest):
                 force=request.force,
                 rating_sources=request.rating_sources,
                 badge_style=request.badge_style,
+                media_overlay=request.media_overlay,
             )
             await process_library_background(single)
 
@@ -383,7 +387,8 @@ async def process_library_background(request: ProcessRequest):
             backup_dir='/backups',
             dry_run=False,
             rating_sources=request.rating_sources,
-            badge_style=request.badge_style  # Pass badge styling options
+            badge_style=request.badge_style,
+            media_overlay=request.media_overlay or _load_settings().get('media_overlay')
         )
 
         if request.rating_key:
@@ -489,7 +494,56 @@ class PreviewRequest(BaseModel):
     badge_positions: Optional[Dict[str, Dict[str, float]]] = None
     rating_sources: Optional[Dict[str, bool]] = None
     badge_style: Optional[Dict[str, Any]] = None
+    media_overlay: Optional[Dict[str, Any]] = None
     count: int = 3
+
+
+@app.post('/api/preview-test')
+async def preview_test(image: UploadFile = File(...), options: str = Form(...)):
+    """Render manually entered sample data onto an uploaded image; never contact Plex."""
+    import base64
+    import io
+    import tempfile
+    from pathlib import Path
+    from PIL import Image, UnidentifiedImageError
+    from src.rating_overlay.media_badges import draw_media_badges
+
+    try:
+        data = json.loads(options)
+        if not isinstance(data, dict):
+            raise ValueError('Invalid options')
+        raw = await image.read(10 * 1024 * 1024 + 1)
+        if len(raw) > 10 * 1024 * 1024:
+            raise HTTPException(413, 'Image exceeds 10 MB')
+        with Image.open(io.BytesIO(raw)) as source:
+            source.load()
+            if source.width * source.height > 25_000_000:
+                raise HTTPException(413, 'Image dimensions exceed 25 megapixels')
+            original = source.convert('RGB')
+        rating = data.get('imdb')
+        if rating not in (None, ''):
+            rating = float(rating)
+            if not 0 <= rating <= 10:
+                raise ValueError('IMDb rating must be between 0 and 10')
+        source = data.get('source') if data.get('source') in ('BluRay', 'PreRelease') else None
+        valid = {'DE': '🇩🇪', 'EN': '🇬🇧', 'FR': '🇫🇷', 'ES': '🇪🇸', 'IT': '🇮🇹', 'JA': '🇯🇵'}
+        languages = [(code, valid[code]) for code in data.get('languages', []) if code in valid]
+        with tempfile.TemporaryDirectory(prefix='kometizarr-preview-') as tmp:
+            original_path, output_path = Path(tmp) / 'original.jpg', Path(tmp) / 'result.jpg'
+            original.save(original_path, 'JPEG', quality=95)
+            if rating is not None and rating != '':
+                MultiRatingBadge().apply_to_poster(
+                    str(original_path), {'imdb': rating}, str(output_path),
+                    badge_style=data.get('badge_style'),
+                    badge_positions={'imdb': data.get('imdb_position', {'x': 2, 'y': 2})})
+            else:
+                original.save(output_path, 'JPEG', quality=95)
+            if source or languages:
+                draw_media_badges(str(output_path), source, languages, data.get('media_overlay'))
+            return {'image': base64.b64encode(output_path.read_bytes()).decode(),
+                    'width': original.width, 'height': original.height}
+    except (ValueError, TypeError, UnidentifiedImageError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/api/preview")
@@ -515,6 +569,7 @@ async def preview_posters(request: PreviewRequest):
             dry_run=False,
             rating_sources=request.rating_sources,
             badge_style=request.badge_style,
+            media_overlay=request.media_overlay,
         )
 
         all_items = manager.library.all()
@@ -533,14 +588,20 @@ async def preview_posters(request: PreviewRequest):
                 if request.rating_sources:
                     ratings = {k: v for k, v in ratings.items() if request.rating_sources.get(k, True)}
 
-                if not ratings or all(v == 0 for v in ratings.values()):
+                from src.rating_overlay.media_badges import source_label, audio_languages, draw_media_badges
+                media_options = request.media_overlay or _load_settings().get('media_overlay', {})
+                source = source_label(item) if media_options.get('source') else None
+                languages = audio_languages(item) if item.type == 'episode' and media_options.get('languages') else []
+                if not ratings and not source and not languages:
                     continue
 
                 # Use existing backup poster if available, otherwise download
-                poster_path = manager.backup_manager.get_original_poster(manager.library_name, item.title, year=item.year)
+                poster_path = (manager.backup_manager.backup_dir / manager.library_name / 'episodes' / str(item.ratingKey) / 'original.jpg') if item.type == 'episode' else manager.backup_manager.get_original_poster(manager.library_name, item.title, year=getattr(item, 'year', None))
+                if poster_path and not Path(poster_path).exists():
+                    poster_path = None
 
                 if not poster_path:
-                    poster_url = item.posterUrl
+                    poster_url = manager.server.url(item.thumb) if item.type == 'episode' and item.thumb else item.posterUrl
                     if not poster_url:
                         continue
                     response = req.get(
@@ -556,13 +617,16 @@ async def preview_posters(request: PreviewRequest):
 
                 # Apply overlay (no upload)
                 output_path = f'/tmp/kometizarr_prev_{item.ratingKey}.jpg'
-                manager.multi_rating_badge.apply_to_poster(
-                    poster_path=str(poster_path),
-                    ratings=ratings,
-                    output_path=output_path,
-                    badge_style=manager.badge_style,
-                    badge_positions=request.badge_positions,
-                )
+                if ratings:
+                    manager.multi_rating_badge.apply_to_poster(
+                        poster_path=str(poster_path), ratings=ratings, output_path=output_path,
+                        badge_style=manager.badge_style, badge_positions=request.badge_positions)
+                else:
+                    from PIL import Image
+                    with Image.open(poster_path) as img:
+                        img.convert('RGB').save(output_path, 'JPEG')
+                if source or languages:
+                    draw_media_badges(output_path, source, languages, media_options)
 
                 with open(output_path, 'rb') as f:
                     image_b64 = base64.b64encode(f.read()).decode()
@@ -885,6 +949,7 @@ def _load_settings() -> dict:
         "cron_normal": {"enabled": False, "libraries": [], "schedule": "0 3 * * *"},
         "cron_force":  {"enabled": False, "libraries": [], "schedule": "0 3 * * 0"},
         "webhook": {"enabled": False, "libraries": []},
+        "media_overlay": {"source": True, "languages": True, "font_percent": 4, "opacity": 180},
     }
     if not SETTINGS_PATH.exists():
         return defaults
@@ -899,6 +964,8 @@ def _load_settings() -> dict:
         old = data["webhook"].pop("library")
         data["webhook"]["enabled"] = bool(old)
         data["webhook"]["libraries"] = [] if not old or old == "__all__" else [old]
+    for key, value in defaults.items():
+        data.setdefault(key, value)
     return data
 
 
@@ -952,6 +1019,7 @@ async def _run_libraries_sequentially(libraries: list, force: bool):
     badge_style = settings.get("badge_style")
     badge_positions = settings.get("badge_positions")
     rating_sources = settings.get("rating_sources")
+    media_overlay = settings.get("media_overlay")
     label = "force" if force else "normal"
     for lib_name in libraries:
         logger.info(f"Cron ({label}): processing {lib_name}")
@@ -961,6 +1029,7 @@ async def _run_libraries_sequentially(libraries: list, force: bool):
             badge_style=badge_style,
             badge_positions=badge_positions,
             rating_sources=rating_sources,
+            media_overlay=media_overlay,
         ))
 
 
@@ -985,6 +1054,7 @@ async def _webhook_queue_worker():
             badge_style = settings.get("badge_style")
             badge_positions = settings.get("badge_positions")
             rating_sources = settings.get("rating_sources")
+            media_overlay = settings.get("media_overlay")
             logger.info(f"Webhook queue: processing {library_name} / {item_title} (key={rating_key})")
             await process_library_background(ProcessRequest(
                 library_name=library_name,
@@ -992,6 +1062,7 @@ async def _webhook_queue_worker():
                 badge_style=badge_style,
                 badge_positions=badge_positions,
                 rating_sources=rating_sources,
+                media_overlay=media_overlay,
             ))
         except Exception as e:
             logger.error(f"Webhook queue worker error: {e}")

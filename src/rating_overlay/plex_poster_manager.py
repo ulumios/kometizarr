@@ -17,6 +17,7 @@ from .rating_fetcher import RatingFetcher
 from .badge_generator import BadgeGenerator
 from .overlay_composer import OverlayComposer
 from .multi_rating_badge import MultiRatingBadge
+from .media_badges import source_label, audio_languages, draw_media_badges
 from ..utils.logger import ProgressTracker, print_header, print_subheader, print_summary
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,8 @@ class PlexPosterManager:
         backup_dir: str = './data/kometizarr_backups',
         badge_style: Optional[Dict[str, Any]] = None,
         dry_run: bool = False,
-        rating_sources: Optional[Dict[str, bool]] = None
+        rating_sources: Optional[Dict[str, bool]] = None,
+        media_overlay: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize Plex poster manager
@@ -60,6 +62,7 @@ class PlexPosterManager:
         self.dry_run = dry_run
         self.rating_sources = rating_sources or {}
         self.badge_style = badge_style or {}  # Store badge styling options
+        self.media_overlay = media_overlay or {}
 
         # Connect to Plex
         self.server = PlexServer(plex_url, plex_token)
@@ -78,7 +81,7 @@ class PlexPosterManager:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Connected to Plex: {self.server.friendlyName}")
-        logger.info(f"Library: {library_name} ({len(self.library.all())} items)")
+        logger.info(f"Library: {library_name}")
         if dry_run:
             logger.info("DRY-RUN MODE: No changes will be applied")
 
@@ -157,6 +160,8 @@ class PlexPosterManager:
             None if skipped (already has overlay)
             False if failed
         """
+        if getattr(movie, 'type', None) == 'episode':
+            return self.process_episode(movie, force=force, badge_positions=badge_positions)
         try:
             # Extract IDs - TMDB ID is optional (many TV shows don't have it)
             tmdb_id = self._extract_tmdb_id(movie.guids)
@@ -283,6 +288,11 @@ class PlexPosterManager:
                 badge_positions=badge_positions  # Pass individual badge positions if provided
             )
 
+            source = source_label(movie) if self.media_overlay.get('source', False) else None
+            languages = audio_languages(movie) if movie.type == 'episode' and self.media_overlay.get('languages', False) else []
+            if source or languages:
+                draw_media_badges(str(overlay_path), source, languages, self.media_overlay)
+
             # Save overlay version to backup
             self.backup_manager.save_overlay_poster(
                 library_name=self.library_name,
@@ -303,6 +313,51 @@ class PlexPosterManager:
 
         except Exception as e:
             logger.error(f"✗ {movie.title}: Error - {e}")
+            return False
+
+    def process_episode(self, episode, force=False, badge_positions=None):
+        """Render one episode thumbnail using a rating-key isolated original backup."""
+        try:
+            from PIL import Image
+            import requests
+            key = str(episode.ratingKey)
+            backup = self.backup_manager.backup_dir / self.library_name / 'episodes' / key
+            backup.mkdir(parents=True, exist_ok=True)
+            original = backup / 'original.jpg'
+            rendered = backup / 'overlay.jpg'
+            if rendered.exists() and not force:
+                return None
+            if not original.exists():
+                thumb = getattr(episode, 'thumb', None)
+                if not thumb:
+                    logger.warning('Episode %s has no thumbnail', key)
+                    return False
+                response = self.server._session.get(self.server.url(thumb), timeout=30)
+                response.raise_for_status()
+                original.write_bytes(response.content)
+                with Image.open(original) as img:
+                    img.verify()
+            ratings = self._extract_plex_ratings(episode)
+            ratings = {k: v for k, v in ratings.items() if self.rating_sources.get(k, True)}
+            source = source_label(episode) if self.media_overlay.get('source', False) else None
+            languages = audio_languages(episode) if self.media_overlay.get('languages', False) else []
+            if not ratings and not source and not languages:
+                return None
+            if self.dry_run:
+                return True
+            if ratings:
+                self.multi_rating_badge.apply_to_poster(
+                    str(original), ratings, str(rendered), badge_style=self.badge_style,
+                    badge_positions=badge_positions or {'imdb': {'x': 3, 'y': 3}})
+            else:
+                with Image.open(original) as img:
+                    img.convert('RGB').save(rendered, 'JPEG', quality=95)
+            if source or languages:
+                draw_media_badges(str(rendered), source, languages, self.media_overlay)
+            episode.uploadThumb(filepath=str(rendered))
+            return True
+        except Exception:
+            logger.exception('Failed to process episode %s', getattr(episode, 'ratingKey', '?'))
             return False
 
     def process_library(
