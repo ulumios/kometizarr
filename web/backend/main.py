@@ -101,6 +101,8 @@ class ProcessRequest(BaseModel):
     media_overlay: Optional[Dict[str, Any]] = None
     include_episodes: bool = False
     reset_to_plex: bool = False
+    use_imdb_cache: bool = False
+    record_results: bool = False
 
 
 class ProcessBatchRequest(BaseModel):
@@ -127,7 +129,7 @@ def _selected_items(library, keys):
     seen = set()
     for key in keys:
         item = library.fetchItem(int(key))
-        if str(item.librarySectionID) != str(library.key):
+        if str(getattr(item, 'librarySectionID', library.key)) != str(library.key):
             raise ValueError(f"Item {key} does not belong to {library.title}")
         children = item.episodes() if item.type == 'season' else [item]
         for child in children:
@@ -155,7 +157,7 @@ async def browse_library(library_name: str, parent_key: Optional[int] = None, pa
                 raise HTTPException(400, 'Only movie and show libraries are supported')
             if parent_key is not None:
                 parent = library.fetchItem(parent_key)
-                if parent.type != 'show' or str(parent.librarySectionID) != str(library.key):
+                if parent.type != 'show' or str(getattr(parent, 'librarySectionID', library.key)) != str(library.key):
                     raise HTTPException(400, 'Invalid show for this library')
                 entries = parent.seasons()
             else:
@@ -187,13 +189,16 @@ async def browse_poster(library_name: str, rating_key: int):
         server = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
         library = server.library.section(library_name)
         item = library.fetchItem(rating_key)
-        if str(item.librarySectionID) != str(library.key):
+        if str(getattr(item, 'librarySectionID', library.key)) != str(library.key):
             raise HTTPException(404, 'Poster not found')
-        thumb = getattr(item, 'thumb', None)
+        thumb = getattr(item, 'thumb', None) or getattr(item, 'posterUrl', None)
         if not thumb:
             raise HTTPException(404, 'Poster not found')
-        image = server._session.get(server.url(thumb), timeout=20)
+        poster_url = thumb if thumb.startswith(('http://', 'https://')) else server.url(thumb)
+        image = server._session.get(poster_url, headers={'X-Plex-Token': os.getenv('PLEX_TOKEN')}, timeout=20)
         image.raise_for_status()
+        if not image.headers.get('Content-Type', '').startswith('image/'):
+            raise HTTPException(502, 'Plex did not return an image')
         if len(_browse_image_cache) >= 200:
             _browse_image_cache.pop(next(iter(_browse_image_cache)))
         _browse_image_cache[cache_key] = (time.monotonic() + 180, image.content,
@@ -518,6 +523,7 @@ async def process_library_background(request: ProcessRequest):
         processing_state["failed"] = 0
         processing_state["skipped"] = 0
         processing_state.pop('error', None)
+        processing_state.pop('item_results', None)
         processing_state["current_item"] = None
         processing_state["force_mode"] = request.force
         processing_start_time = datetime.now()
@@ -538,7 +544,7 @@ async def process_library_background(request: ProcessRequest):
         )
 
         imdb_cache = None
-        if _load_settings().get('imdb_direct', {}).get('enabled'):
+        if request.use_imdb_cache or _load_settings().get('imdb_direct', {}).get('enabled'):
             from src.rating_overlay.imdb_cache import ImdbRatingCache
             imdb_cache = ImdbRatingCache()
 
@@ -554,6 +560,8 @@ async def process_library_background(request: ProcessRequest):
                 all_items = all_items[:request.limit]
 
         processing_state["total"] = len(all_items)
+        if request.record_results:
+            processing_state['item_results'] = {}
         if imdb_cache:
             imdb_ids = {manager._extract_imdb_id(getattr(item, 'guids', []) or []) for item in all_items}
             manager.imdb_ratings = imdb_cache.ratings(imdb_ids - {None})
@@ -598,6 +606,9 @@ async def process_library_background(request: ProcessRequest):
                                                 manager.imdb_ratings[imdb_id])
             else:
                 processing_state["failed"] += 1
+            if request.record_results:
+                processing_state['item_results'][str(item.ratingKey)] = (
+                    'gerendert' if result is True else 'übersprungen' if result is None else 'fehlgeschlagen')
 
             # Broadcast progress to all WebSocket connections
             await broadcast_progress()
@@ -1094,7 +1105,8 @@ fresh_posters_state = {
 }
 
 imdb_sync_state = {'is_running': False, 'phase': 'idle', 'scanned': 0, 'matched': 0,
-                   'changed': 0, 'rendered': 0, 'failed': 0, 'error': None, 'updated_at': None}
+                   'changed': 0, 'rendered': 0, 'failed': 0, 'error': None, 'updated_at': None,
+                   'logs': []}
 
 
 def _load_settings() -> dict:
@@ -1164,6 +1176,93 @@ async def get_imdb_sync_status():
     return imdb_sync_state
 
 
+class SelectedImdbRequest(BaseModel):
+    rating_keys: List[str]
+    mode: str  # 'ratings' or 'both'
+
+
+@app.post('/api/library/{library_name}/selected-imdb')
+async def start_selected_imdb(library_name: str, request: SelectedImdbRequest):
+    if request.mode not in ('ratings', 'both') or not 0 < len(request.rating_keys) <= 250:
+        raise HTTPException(400, 'Select 1–250 items and a valid action')
+    if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring']:
+        raise HTTPException(409, 'Another run is already active')
+    imdb_sync_state.update(is_running=True, library=library_name, phase='Lese Auswahl', scanned=0, matched=0,
+                           changed=0, rendered=0, failed=0, error=None, logs=[])
+    asyncio.create_task(_run_selected_imdb(library_name, request))
+    return {'status': 'started'}
+
+
+def _resolve_selected_for_imdb(library_name, keys):
+    from plexapi.server import PlexServer
+    server = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
+    library = server.library.section(library_name)
+    entries = []
+    for item in _selected_items(library, keys):
+        title = item.title
+        if item.type == 'episode':
+            season = getattr(item, 'parentIndex', 0) or 0
+            episode = getattr(item, 'index', 0) or 0
+            title = f"{getattr(item, 'grandparentTitle', '')} S{season:02d}E{episode:02d} · {title}"
+        entries.append({'key': str(item.ratingKey), 'title': title, 'type': item.type,
+                        'imdb_id': PlexPosterManager._extract_imdb_id(None, getattr(item, 'guids', []) or [])})
+    return entries
+
+
+async def _run_selected_imdb(library_name, request):
+    from src.rating_overlay.imdb_cache import ImdbRatingCache
+    cache = None
+    try:
+        selected = await asyncio.to_thread(_resolve_selected_for_imdb, library_name, request.rating_keys)
+        imdb_sync_state['scanned'] = len(selected)
+        ids = {entry['imdb_id'] for entry in selected if entry['imdb_id']}
+        cache = ImdbRatingCache()
+        previous = cache.ratings(ids)
+        imdb_sync_state['phase'] = 'IMDb-Wertungen laden'
+        fetched = await asyncio.to_thread(cache.refresh, ids) if ids else {}
+        imdb_sync_state['matched'] = len(fetched)
+        imdb_sync_state['updated_at'] = cache.updated_at()
+        logs = []
+        for entry in selected:
+            imdb_id = entry['imdb_id']
+            current = fetched.get(imdb_id)
+            old = previous.get(imdb_id)
+            changed = current is not None and old is not None and current != old
+            if changed:
+                imdb_sync_state['changed'] += 1
+            logs.append({'key': entry['key'], 'title': entry['title'], 'type': entry['type'],
+                         'imdb_id': imdb_id, 'previous': old, 'rating': current,
+                         'changed': changed, 'render': 'ausstehend' if request.mode == 'both' else None})
+        imdb_sync_state['logs'] = logs
+        cache.close()
+        cache = None
+        if request.mode == 'both':
+            settings = _load_settings()
+            imdb_sync_state['phase'] = 'Poster rendern'
+            await process_library_background(ProcessRequest(
+                library_name=library_name, rating_keys=request.rating_keys, force=True,
+                use_imdb_cache=True, record_results=True,
+                badge_style=settings.get('badge_style'), badge_positions=settings.get('badge_positions'),
+                rating_sources={**(settings.get('rating_sources') or DEFAULT_RATING_SOURCES), 'imdb': True},
+                media_overlay=settings.get('media_overlay')))
+            results = processing_state.get('item_results', {})
+            for row in logs:
+                row['render'] = results.get(row['key'], 'fehlgeschlagen')
+            imdb_sync_state['rendered'] = processing_state['success']
+            imdb_sync_state['failed'] = processing_state['failed']
+            if processing_state.get('error'):
+                raise RuntimeError(processing_state['error'])
+        imdb_sync_state['phase'] = 'Abgeschlossen'
+    except Exception as exc:
+        imdb_sync_state['error'] = str(exc)
+        imdb_sync_state['phase'] = 'Fehlgeschlagen'
+        logger.exception('Selected IMDb refresh failed')
+    finally:
+        if cache:
+            cache.close()
+        imdb_sync_state['is_running'] = False
+
+
 @app.post('/api/imdb-sync')
 async def start_imdb_sync():
     settings = _load_settings()
@@ -1171,8 +1270,8 @@ async def start_imdb_sync():
         raise HTTPException(400, 'Enable direct IMDb ratings first')
     if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring']:
         raise HTTPException(409, 'Another run is already active')
-    imdb_sync_state.update(is_running=True, phase='Scanning Plex', scanned=0, matched=0,
-                           changed=0, rendered=0, failed=0, error=None)
+    imdb_sync_state.update(is_running=True, library=None, phase='Scanning Plex', scanned=0, matched=0,
+                           changed=0, rendered=0, failed=0, error=None, logs=[])
     asyncio.create_task(_run_imdb_sync())
     return {'status': 'started'}
 
@@ -1268,7 +1367,7 @@ async def _cron_imdb_sync():
     if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring']:
         logger.info('IMDb automatic refresh skipped: another job is running')
         return
-    imdb_sync_state.update(is_running=True, phase='Scanning Plex', scanned=0, matched=0,
+    imdb_sync_state.update(is_running=True, library=None, phase='Scanning Plex', scanned=0, matched=0,
                            changed=0, rendered=0, failed=0, error=None)
     await _run_imdb_sync()
 

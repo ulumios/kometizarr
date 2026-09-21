@@ -12,7 +12,28 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [error, setError] = useState('')
   const [confirmReset, setConfirmReset] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [posterVersion] = useState(() => Date.now())
+  const [posterVersion, setPosterVersion] = useState(() => Date.now())
+  const [imdbJob, setImdbJob] = useState(null)
+
+  useEffect(() => {
+    fetch('/api/imdb-sync/status').then(r => r.json()).then(data => {
+      if (data.library === library) setImdbJob(data)
+    }).catch(() => {})
+  }, [library])
+
+  useEffect(() => {
+    if (!imdbJob?.is_running) return
+    const timer = setInterval(() => fetch('/api/imdb-sync/status').then(r => r.json()).then(data => {
+      if (data.library === library) setImdbJob(data)
+    }).catch(() => {}), 1500)
+    return () => clearInterval(timer)
+  }, [imdbJob?.is_running, library])
+
+  useEffect(() => {
+    if (imdbJob?.phase === 'Abgeschlossen' && !imdbJob.is_running && imdbJob.rendered > 0) {
+      setPosterVersion(Date.now())
+    }
+  }, [imdbJob?.is_running, imdbJob?.phase])
 
   useEffect(() => {
     fetch('/api/libraries').then(r => r.json()).then(data => {
@@ -37,7 +58,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
     return () => { active = false }
   }, [library, parent, page])
 
-  const switchLibrary = name => { setLibrary(name); setParent(null); setPage(1); setSelected([]) }
+  const switchLibrary = name => { setLibrary(name); setParent(null); setPage(1); setSelected([]); setImdbJob(null) }
   const openShow = item => { setParent(item); setPage(1); setSelected([]) }
   const toggle = key => setSelected(previous => previous.includes(key) ? previous.filter(k => k !== key) : [...previous, key])
   const allVisible = items.length > 0 && items.every(item => selected.includes(item.key))
@@ -58,6 +79,22 @@ export default function LibraryBrowser({ onStartProcessing }) {
     finally { setBusy(false) }
   }
 
+  const launchImdb = async mode => {
+    if (!selected.length || busy || imdbJob?.is_running) return
+    setBusy(true)
+    setError('')
+    try {
+      const response = await fetch(`/api/library/${encodeURIComponent(library)}/selected-imdb`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rating_keys: selected, mode }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw Error(data.detail || 'IMDb-Lauf konnte nicht gestartet werden')
+      setImdbJob({ is_running: true, phase: 'Lese Auswahl', library, logs: [] })
+    } catch (e) { setError(e.message) }
+    finally { setBusy(false) }
+  }
+
   return <section className="space-y-5 text-gray-200">
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
       <h2 className="font-semibold text-lg mb-2">Bibliotheken durchsuchen</h2>
@@ -74,7 +111,8 @@ export default function LibraryBrowser({ onStartProcessing }) {
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-4">{items.map(item => <div key={item.key} className={`rounded-lg border overflow-hidden ${selected.includes(item.key) ? 'border-blue-500 bg-blue-950/30' : 'border-gray-600 bg-gray-900'}`}>
         <button type="button" onClick={() => toggle(item.key)} aria-label={`${item.title} auswählen`} className="relative block w-full aspect-[2/3] bg-gray-950">
-          <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${encodeURIComponent(item.key)}?v=${posterVersion}`} alt="" className="w-full h-full object-cover" />
+          <span className="absolute inset-0 flex items-center justify-center text-xs text-gray-500 p-3">Kein Poster verfügbar</span>
+          <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${encodeURIComponent(item.key)}?v=${posterVersion}`} alt="" className="absolute inset-0 w-full h-full object-cover" onError={event => { event.currentTarget.style.display = 'none' }} />
           <span className={`absolute top-2 right-2 rounded px-2 py-1 text-sm ${selected.includes(item.key) ? 'bg-blue-600 text-white' : 'bg-gray-900/90 text-gray-200'}`}>{selected.includes(item.key) ? '✓' : '○'}</span>
         </button>
         <div className="p-2.5"><div className="text-sm truncate" title={item.title}>{item.type === 'season' ? `Staffel ${item.index ?? '–'} · ` : ''}{item.title} {item.year ? `(${item.year})` : ''}</div>
@@ -85,9 +123,22 @@ export default function LibraryBrowser({ onStartProcessing }) {
     {error && <p role="alert" className="text-red-300">{error}</p>}
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 flex flex-wrap items-center gap-3">
       <span className="text-sm mr-auto">{selected.length} ausgewählt</span>
-      <button disabled={!selected.length || busy} onClick={() => launch(false)} className="px-4 py-2 rounded bg-blue-600 disabled:opacity-40">Overlays erneut anwenden</button>
+      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launch(false)} className="px-4 py-2 rounded bg-blue-600 disabled:opacity-40">Nur Poster erneuern</button>
+      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launchImdb('ratings')} className="px-4 py-2 rounded bg-violet-700 disabled:opacity-40">Nur IMDb-Wertungen aktualisieren</button>
+      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launchImdb('both')} className="px-4 py-2 rounded bg-emerald-700 disabled:opacity-40">Poster und IMDb-Wertungen</button>
       <button disabled={!selected.length || busy} onClick={() => setConfirmReset(true)} className="px-4 py-2 rounded bg-orange-700 disabled:opacity-40">Plex-Poster zurücksetzen</button>
     </div>
+    {imdbJob && <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-3">
+      <h3 className="font-semibold">IMDb-Protokoll · {imdbJob.phase}</h3>
+      <p className="text-xs text-gray-400">{imdbJob.scanned || 0} Einträge · {imdbJob.matched || 0} IMDb-Titel · {imdbJob.changed || 0} geänderte Werte · {imdbJob.rendered || 0} Poster gerendert</p>
+      {imdbJob.error && <p role="alert" className="text-red-300 text-sm">{imdbJob.error}</p>}
+      <div className="max-h-80 overflow-auto space-y-1 text-sm" role="log">{(imdbJob.logs || []).map(row => <div key={row.key} className="flex flex-wrap gap-x-3 gap-y-1 border-b border-gray-700 py-1">
+        <span className="flex-1 min-w-44">{row.type === 'episode' ? 'Episode · ' : row.type === 'show' ? 'Serie · ' : 'Film · '}{row.title}</span>
+        <span className="text-gray-300">{row.imdb_id || 'Keine IMDb-ID'}: {row.rating == null ? 'keine Wertung' : row.rating.toFixed(1)}</span>
+        <span className={row.changed ? 'text-amber-300' : 'text-gray-400'}>{row.changed ? `${row.previous.toFixed(1)} → ${row.rating.toFixed(1)} (geändert)` : row.previous == null && row.rating != null ? 'neu im Cache' : 'unverändert'}</span>
+        {row.render && <span className="text-blue-300">Poster: {row.render}</span>}
+      </div>)}</div>
+    </div>}
     {confirmReset && <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"><div className="bg-gray-800 border border-gray-600 rounded-xl p-6 max-w-md space-y-4">
       <h3 className="text-lg font-semibold">Plex-Poster zurücksetzen?</h3>
       <p className="text-sm text-gray-300">Für die Auswahl wird das erste verfügbare Poster ohne Upload aus Plex gewählt. Einträge ohne solches Poster werden übersprungen.</p>

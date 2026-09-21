@@ -32,10 +32,12 @@ class ImdbCacheTest(unittest.TestCase):
             cache.mark_applied('Shows', '123', 'tt100', 8.1)
             self.assertEqual(cache.ratings({'tt100', 'tt200'}), {'tt100': 8.1})
             updated = gzip.compress(b'tconst\taverageRating\tnumVotes\ntt100\t8.2\t11\n')
+            cache.dataset_path.unlink()
             with patch('src.rating_overlay.imdb_cache.requests.get', return_value=FakeResponse(updated)):
                 cache.refresh({'tt100'})
             self.assertEqual(cache.applied('Shows', '123'), ('tt100', 8.1))
             self.assertEqual(cache.ratings({'tt100'}), {'tt100': 8.2})
+            cache.dataset_path.unlink()
             with patch('src.rating_overlay.imdb_cache.requests.get', return_value=FakeResponse(b'invalid')):
                 with self.assertRaises(OSError):
                     cache.refresh({'tt100'})

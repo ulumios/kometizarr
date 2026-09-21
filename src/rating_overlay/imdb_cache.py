@@ -2,7 +2,10 @@
 
 import csv
 import gzip
+import os
+import shutil
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +18,7 @@ RATINGS_URL = 'https://datasets.imdbws.com/title.ratings.tsv.gz'
 class ImdbRatingCache:
     def __init__(self, path='/backups/imdb_ratings.sqlite3'):
         self.path = Path(path)
+        self.dataset_path = self.path.with_suffix('.tsv.gz')
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.db.execute('CREATE TABLE IF NOT EXISTS ratings (imdb_id TEXT PRIMARY KEY, rating REAL NOT NULL)')
@@ -52,19 +56,30 @@ class ImdbRatingCache:
         return row[0] if row else None
 
     def refresh(self, ids):
-        """Stream the official dataset and atomically replace cached values for matching IDs."""
+        """Reuse a daily dataset download; atomically cache the requested ratings."""
         wanted = set(ids)
         found = {}
-        with requests.get(RATINGS_URL, stream=True, timeout=(20, 120)) as response:
-            response.raise_for_status()
-            response.raw.decode_content = False
-            with gzip.GzipFile(fileobj=response.raw) as stream:
-                rows = csv.DictReader((line.decode('utf-8') for line in stream), delimiter='\t')
+        fresh = self.dataset_path.exists() and time.time() - self.dataset_path.stat().st_mtime < 86400
+        source = self.dataset_path if fresh else self.dataset_path.with_suffix('.pending.gz')
+        try:
+            if not fresh:
+                with requests.get(RATINGS_URL, stream=True, timeout=(20, 120)) as response:
+                    response.raise_for_status()
+                    response.raw.decode_content = False
+                    with source.open('wb') as destination:
+                        shutil.copyfileobj(response.raw, destination)
+            with gzip.open(source, 'rt', encoding='utf-8') as stream:
+                rows = csv.DictReader(stream, delimiter='\t')
                 if not {'tconst', 'averageRating'}.issubset(rows.fieldnames or []):
                     raise ValueError('IMDb ratings dataset has an unexpected format')
                 for row in rows:
                     if row['tconst'] in wanted:
                         found[row['tconst']] = float(row['averageRating'])
+            if not fresh:
+                os.replace(source, self.dataset_path)
+        finally:
+            if not fresh:
+                source.unlink(missing_ok=True)
         with self.db:
             self.db.executemany('INSERT OR REPLACE INTO ratings VALUES (?, ?)', found.items())
             self.db.execute('INSERT OR REPLACE INTO meta VALUES (?, ?)',
