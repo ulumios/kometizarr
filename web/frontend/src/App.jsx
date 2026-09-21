@@ -3,6 +3,7 @@ import Dashboard from './components/Dashboard'
 import Collections from './components/Collections'
 import ProcessingProgress from './components/ProcessingProgress'
 import Settings from './components/Settings'
+import LibraryBrowser from './components/LibraryBrowser'
 
 function App() {
   const [processing, setProcessing] = useState(false)
@@ -101,6 +102,12 @@ function App() {
                   ⭐ Rating Overlays
                 </button>
                 <button
+                  onClick={() => setActiveTab('browser')}
+                  className={`py-4 px-2 border-b-2 font-medium text-sm transition ${activeTab === 'browser' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-300'}`}
+                >
+                  🎞️ Bibliotheken
+                </button>
+                <button
                   onClick={() => setActiveTab('collections')}
                   className={`py-4 px-2 border-b-2 font-medium text-sm transition ${
                     activeTab === 'collections'
@@ -133,6 +140,8 @@ function App() {
                 }}
             onLibrarySelect={setSelectedLibrary}
               />
+            ) : activeTab === 'browser' ? (
+              <LibraryBrowser onStartProcessing={() => { setProgressData(null); setShowProgressBanner(true); setProcessing(true) }} />
             ) : activeTab === 'collections' ? (
               <Collections selectedLibrary={selectedLibrary} />
             ) : (

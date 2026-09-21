@@ -473,34 +473,6 @@ export default function Settings() {
             {(settings.webhook?.libraries || []).length === 0 && (
               <p className="text-xs text-gray-600 mt-1">All libraries will be monitored</p>
             )}
-            <label className="text-xs text-gray-400 block mt-4 mb-1.5">
-              Exclude libraries from webhooks <span className="text-gray-600">(takes priority over the selection above)</span>
-            </label>
-            <div className="flex flex-wrap gap-2">
-              {libraries.map(lib => {
-                const excluded = (settings.webhook?.exclude_libraries || []).includes(lib.name)
-                return (
-                  <button
-                    key={lib.name}
-                    type="button"
-                    onClick={() => setSettings(s => {
-                      const previous = s.webhook?.exclude_libraries || []
-                      return { ...s, webhook: { ...s.webhook, exclude_libraries: excluded
-                        ? previous.filter(name => name !== lib.name)
-                        : [...previous, lib.name] } }
-                    })}
-                    className={`px-3 py-1 rounded-full text-xs font-medium transition border ${
-                      excluded
-                        ? 'bg-red-900/60 border-red-500 text-red-200'
-                        : 'bg-gray-800 border-gray-600 text-gray-400 hover:border-gray-500'
-                    }`}
-                  >
-                    {excluded ? '✕ ' : ''}{lib.name}
-                  </button>
-                )
-              })}
-            </div>
-            <p className="text-xs text-gray-500 mt-1">Excluded libraries are ignored when new items arrive, including items already queued.</p>
           </div>
         )}
 

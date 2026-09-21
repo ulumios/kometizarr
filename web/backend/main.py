@@ -88,8 +88,10 @@ class ProcessRequest(BaseModel):
     rating_sources: Optional[Dict[str, bool]] = None  # Which ratings to show
     badge_style: Optional[Dict[str, Any]] = None  # Badge styling options
     rating_key: Optional[str] = None  # If set, process only this specific Plex item
+    rating_keys: Optional[List[str]] = None  # Selected Plex items, including seasons
     media_overlay: Optional[Dict[str, Any]] = None
     include_episodes: bool = False
+    reset_to_plex: bool = False
 
 
 class ProcessBatchRequest(BaseModel):
@@ -108,6 +110,55 @@ class LibraryStats(BaseModel):
     total_items: int
     processed_items: int
     success_rate: float
+
+
+def _selected_items(library, keys):
+    """Resolve keys inside a library; selected seasons represent their episodes."""
+    selected = []
+    seen = set()
+    for key in keys:
+        item = library.fetchItem(int(key))
+        if str(item.librarySectionID) != str(library.key):
+            raise ValueError(f"Item {key} does not belong to {library.title}")
+        children = item.episodes() if item.type == 'season' else [item]
+        for child in children:
+            if child.type not in ('movie', 'show', 'episode'):
+                continue
+            if str(child.ratingKey) not in seen:
+                selected.append(child)
+                seen.add(str(child.ratingKey))
+    return selected
+
+
+@app.get('/api/library/{library_name}/browse')
+async def browse_library(library_name: str, parent_key: Optional[int] = None, page: int = 1, page_size: int = 60):
+    """Browse movies/shows or seasons of one show without loading all posters."""
+    try:
+        from plexapi.server import PlexServer
+        server = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
+        library = server.library.section(library_name)
+        if library.type not in ('movie', 'show'):
+            raise HTTPException(400, 'Only movie and show libraries are supported')
+        if parent_key is not None:
+            parent = library.fetchItem(parent_key)
+            if parent.type != 'show' or str(parent.librarySectionID) != str(library.key):
+                raise HTTPException(400, 'Invalid show for this library')
+            entries = parent.seasons()
+        else:
+            entries = library.all()
+        page_size = max(1, min(page_size, 100))
+        page = max(1, page)
+        start = (page - 1) * page_size
+        return {'total': len(entries), 'page': page, 'items': [
+            {'key': str(item.ratingKey), 'title': item.title, 'type': item.type,
+             'year': getattr(item, 'year', None),
+             'index': getattr(item, 'index', None)}
+            for item in entries[start:start + page_size]
+        ]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/")
@@ -188,8 +239,15 @@ async def start_processing(request: ProcessRequest):
     """Start overlay processing"""
     global processing_state
 
-    if processing_state["is_processing"]:
+    if processing_state["is_processing"] or restore_state["is_restoring"]:
         return {"error": "Processing already in progress"}
+
+    if request.rating_keys:
+        settings = _load_settings()
+        request.badge_style = request.badge_style or settings.get('badge_style')
+        request.badge_positions = request.badge_positions or settings.get('badge_positions')
+        request.rating_sources = request.rating_sources or settings.get('rating_sources')
+        request.media_overlay = request.media_overlay or settings.get('media_overlay')
 
     # Start background task
     asyncio.create_task(process_library_background(request))
@@ -228,7 +286,7 @@ async def restore_originals(request: ProcessRequest):
     """Start restoring original posters from backups"""
     global restore_state
 
-    if restore_state["is_restoring"]:
+    if restore_state["is_restoring"] or processing_state["is_processing"]:
         return {"error": "Restore already in progress"}
 
     # Start background task
@@ -289,7 +347,7 @@ async def restore_library_background(request: ProcessRequest):
         backup_manager = PosterBackupManager(backup_dir='/backups')
 
         # Get all items
-        all_items = library.all()
+        all_items = _selected_items(library, request.rating_keys) if request.rating_keys else library.all()
         if request.include_episodes and library.type == 'show':
             all_items += library.all(libtype='episode')
         if request.limit:
@@ -309,7 +367,23 @@ async def restore_library_background(request: ProcessRequest):
             restore_state["progress"] = i
             restore_state["current_item"] = item.title
 
-            if item.type == 'episode':
+            if request.reset_to_plex:
+                try:
+                    original = next((p for p in item.posters() if 'upload' not in p.ratingKey), None)
+                    if original is None:
+                        restore_state["skipped"] += 1
+                    else:
+                        original.select()
+                        if item.type == 'episode':
+                            overlay = backup_manager.backup_dir / request.library_name / 'episodes' / str(item.ratingKey) / 'overlay.jpg'
+                        else:
+                            overlay = backup_manager._get_backup_path(request.library_name, item.title, year=item.year) / 'poster_overlay.jpg'
+                        overlay.unlink(missing_ok=True)
+                        restore_state["restored"] += 1
+                except Exception:
+                    logger.exception('Failed to reset Plex poster for %s', item.ratingKey)
+                    restore_state["failed"] += 1
+            elif item.type == 'episode':
                 episode_dir = backup_manager.backup_dir / request.library_name / 'episodes' / str(item.ratingKey)
                 original = episode_dir / 'original.jpg'
                 overlay = episode_dir / 'overlay.jpg'
@@ -414,7 +488,9 @@ async def process_library_background(request: ProcessRequest):
             media_overlay=request.media_overlay or _load_settings().get('media_overlay')
         )
 
-        if request.rating_key:
+        if request.rating_keys:
+            all_items = _selected_items(manager.library, request.rating_keys)
+        elif request.rating_key:
             all_items = [manager.library.fetchItem(int(request.rating_key))]
         else:
             all_items = manager.library.all()
@@ -654,7 +730,7 @@ async def websocket_progress(websocket: WebSocket):
 
     try:
         # Send initial state
-        await websocket.send_json(processing_state)
+        await websocket.send_json(restore_state if restore_state['is_restoring'] else processing_state)
 
         # Keep connection alive
         while True:
@@ -945,7 +1021,7 @@ def _load_settings() -> dict:
     defaults = {
         "cron_normal": {"enabled": False, "libraries": [], "schedule": "0 3 * * *"},
         "cron_force":  {"enabled": False, "libraries": [], "schedule": "0 3 * * 0"},
-        "webhook": {"enabled": False, "libraries": [], "exclude_libraries": []},
+        "webhook": {"enabled": False, "libraries": []},
         "media_overlay": {"source": True, "languages": True, "status": False, "label_size_percent": 4,
                            "episode_font_percent": 2.8, "font_percent": 4, "opacity": 180,
                            "source_labels": {"bluray": "BluRay", "prerelease": "PreRelease"},
@@ -967,7 +1043,6 @@ def _load_settings() -> dict:
         data["webhook"]["libraries"] = [] if not old or old == "__all__" else [old]
     for key, value in defaults.items():
         data.setdefault(key, value)
-    data['webhook'] = {**defaults['webhook'], **(data.get('webhook') or {})}
     data['media_overlay'] = {**defaults['media_overlay'], **(data.get('media_overlay') or {})}
     return data
 
@@ -1055,8 +1130,8 @@ async def _webhook_queue_worker():
             # Load current badge settings so webhook uses same styling as the UI
             settings = _load_settings()
             webhook = settings.get("webhook", {})
-            if not webhook.get("enabled") or library_name in (webhook.get("exclude_libraries") or []):
-                logger.info("Webhook queue: skipping excluded or disabled library %s", library_name)
+            if not webhook.get("enabled"):
+                logger.info("Webhook queue: skipping disabled webhook for %s", library_name)
                 continue
             badge_style = settings.get("badge_style")
             badge_positions = settings.get("badge_positions")
@@ -1244,8 +1319,6 @@ async def plex_webhook(payload: str = FastAPIForm(...)):
             if not target_library:
                 return {"status": "ignored", "reason": "could not determine library from event"}
 
-            if target_library in (webhook.get("exclude_libraries") or []):
-                return {"status": "ignored", "reason": f"library {target_library!r} excluded from webhooks"}
 
             # If libraries list is non-empty, only process the listed libraries
             allowed = webhook.get("libraries", [])
