@@ -29,6 +29,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
   const [testRating, setTestRating] = useState('8.4')
   const [testSource, setTestSource] = useState('BluRay')
   const [testLanguages, setTestLanguages] = useState(['DE', 'EN'])
+  const [testEpisode, setTestEpisode] = useState(true)
   const [testError, setTestError] = useState('')
   const [ratingSources, setRatingSources] = useState(() => {
     // Load from localStorage or default to all enabled
@@ -359,7 +360,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
   const restoreOriginals = async () => {
     if (!selectedLibrary) return
 
-    if (!confirm(`Restore all original posters in ${selectedLibrary.name}? This will remove all overlays.`)) {
+    if (!confirm(`Restore original ${includeEpisodes ? 'show and episode artwork' : 'posters'} in ${selectedLibrary.name}? This will remove their overlays.`)) {
       return
     }
 
@@ -369,6 +370,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           library_name: selectedLibrary.name,
+          include_episodes: includeEpisodes,
         }),
       })
 
@@ -426,6 +428,12 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     savePositionsSoon({ media_overlay: next })
   }
 
+  const setEpisodeOption = (key, value) => {
+    const next = { ...mediaOverlay, [key]: Number(value) }
+    setMediaOverlay(next)
+    savePositionsSoon({ media_overlay: next })
+  }
+
   const previewTestImage = async () => {
     if (!testImage) return
     setPreviewLoading(true)
@@ -434,7 +442,8 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     form.append('image', testImage)
     form.append('options', JSON.stringify({ imdb: testRating, source: testSource,
       languages: testLanguages, badge_style: badgeStyle,
-      imdb_position: badgePositions.imdb, media_overlay: mediaOverlay }))
+      imdb_position: badgePositions.imdb, media_overlay: mediaOverlay,
+      episode: testEpisode }))
     try {
       const res = await fetch('/api/preview-test', { method: 'POST', body: form })
       const result = await res.json()
@@ -544,6 +553,35 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
           </label>
           <p className="text-xs text-gray-400">Filmbibliotheken bleiben davon unberührt. Die Anzahl der Items und Backups wird passend zur Auswahl berechnet.</p>
         </fieldset>
+        <div className="bg-gray-900 rounded-lg p-4 mb-5 space-y-3">
+          <h3 className="text-sm font-medium">Episode badge layout</h3>
+          <p className="text-xs text-gray-400">Relative edge spacing keeps badges in the same corner when episode artwork has different pixel dimensions.</p>
+          {[
+            ['IMDb badge size', 'episode_badge_percent', 5, 20, 1, 9, '% of image width'],
+            ['Language label size', 'episode_font_percent', 1.5, 5, 0.1, 2.8, '% of image width'],
+            ['Corner spacing', 'episode_edge_percent', 0, 6, 0.1, 1.2, '% from edges'],
+          ].map(([label, key, min, max, step, fallback, unit]) => (
+            <label key={key} className="flex gap-3 items-center text-xs text-gray-300">
+              <span className="w-36">{label}</span>
+              <input type="range" min={min} max={max} step={step}
+                value={mediaOverlay[key] ?? fallback}
+                onChange={e => setEpisodeOption(key, e.target.value)} className="flex-1 accent-blue-500" />
+              <span className="w-32 text-right">{mediaOverlay[key] ?? fallback}{unit}</span>
+            </label>
+          ))}
+          <label className="flex gap-3 items-center text-xs text-gray-300">
+            <span className="w-36">EN flag</span>
+            <select value={mediaOverlay.episode_english_flag ?? 'US'}
+              onChange={e => {
+                const next = { ...mediaOverlay, episode_english_flag: e.target.value }
+                setMediaOverlay(next)
+                savePositionsSoon({ media_overlay: next })
+              }} className="bg-gray-800 border border-gray-700 rounded p-1">
+              <option value="US">🇺🇸 US (reference)</option>
+              <option value="GB">🇬🇧 GB</option>
+            </select>
+          </label>
+        </div>
         <div className="bg-gray-900 rounded-lg p-4 mb-5 space-y-4">
           <h3 className="font-medium">Exact overlay positions</h3>
           <p className="text-xs text-gray-400">Pixel offsets on the original image. IMDb measures from top left; source from bottom left; languages from bottom right. Use the uploaded image below to verify the exact result.</p>
@@ -585,6 +623,10 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
           ))}
           <div className="border-t border-gray-700 pt-3 space-y-3">
             <h3 className="text-sm font-medium">Test render with your own image</h3>
+            <label className="flex gap-2 text-xs items-center">
+              <input type="checkbox" checked={testEpisode} onChange={e => setTestEpisode(e.target.checked)} />
+              Use episode sizing and corners
+            </label>
             <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setTestImage(e.target.files?.[0] || null)} className="text-xs w-full" />
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <label>IMDb <input type="number" min="0" max="10" step="0.1" value={testRating} onChange={e => setTestRating(e.target.value)} className="w-16 bg-gray-800 border border-gray-700 rounded p-1" /></label>
@@ -622,7 +664,9 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                     {/* Individual Badges - dynamically sized and styled */}
                     {(() => {
                       // Calculate badge dimensions based on style settings
-                      const badgeSizePercent = badgeStyle.individual_badge_size || 9
+                      const badgeSizePercent = includeEpisodes
+                        ? (mediaOverlay.episode_badge_percent ?? 9)
+                        : (badgeStyle.individual_badge_size || 9)
                       const badgeWidth = (badgeSizePercent / 100) * 120  // Scale to SVG viewBox
                       const badgeHeight = badgeWidth * 1.4  // 1.4 aspect ratio
                       const logoMultiplier = badgeStyle.logo_size_multiplier || 1.0

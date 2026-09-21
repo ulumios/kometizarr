@@ -291,6 +291,8 @@ async def restore_library_background(request: ProcessRequest):
 
         # Get all items
         all_items = library.all()
+        if request.include_episodes and library.type == 'show':
+            all_items += library.all(libtype='episode')
         if request.limit:
             all_items = all_items[:request.limit]
 
@@ -308,8 +310,22 @@ async def restore_library_background(request: ProcessRequest):
             restore_state["progress"] = i
             restore_state["current_item"] = item.title
 
+            if item.type == 'episode':
+                episode_dir = backup_manager.backup_dir / request.library_name / 'episodes' / str(item.ratingKey)
+                original = episode_dir / 'original.jpg'
+                overlay = episode_dir / 'overlay.jpg'
+                if not original.is_file() or not overlay.is_file():
+                    restore_state["skipped"] += 1
+                else:
+                    try:
+                        item.uploadPoster(filepath=str(original))
+                        overlay.unlink()
+                        restore_state["restored"] += 1
+                    except Exception:
+                        logger.exception('Failed to restore episode %s', item.ratingKey)
+                        restore_state["failed"] += 1
             # Skip if no backup exists
-            if not backup_manager.has_backup(request.library_name, item.title, year=item.year):
+            elif not backup_manager.has_backup(request.library_name, item.title, year=item.year):
                 restore_state["skipped"] += 1
             # Skip if already showing original (no overlay applied)
             elif not backup_manager.has_overlay(request.library_name, item.title, year=item.year):
@@ -517,7 +533,7 @@ async def preview_test(image: UploadFile = File(...), options: str = Form(...)):
     import tempfile
     from pathlib import Path
     from PIL import Image, UnidentifiedImageError
-    from src.rating_overlay.media_badges import draw_media_badges
+    from src.rating_overlay.media_badges import draw_media_badges, episode_overlay_options
 
     try:
         data = json.loads(options)
@@ -539,18 +555,24 @@ async def preview_test(image: UploadFile = File(...), options: str = Form(...)):
         source = data.get('source') if data.get('source') in ('BluRay', 'PreRelease') else None
         valid = {'DE': '🇩🇪', 'EN': '🇬🇧', 'FR': '🇫🇷', 'ES': '🇪🇸', 'IT': '🇮🇹', 'JA': '🇯🇵'}
         languages = [(code, valid[code]) for code in data.get('languages', []) if code in valid]
+        badge_style = data.get('badge_style')
+        badge_positions = {'imdb': data.get('imdb_position') or {'x': 2, 'y': 2}}
+        media_style = data.get('media_overlay') or {}
+        if data.get('episode'):
+            badge_style, badge_positions, media_style = episode_overlay_options(
+                badge_style, badge_positions, media_style)
         with tempfile.TemporaryDirectory(prefix='kometizarr-preview-') as tmp:
             original_path, output_path = Path(tmp) / 'original.jpg', Path(tmp) / 'result.jpg'
             original.save(original_path, 'JPEG', quality=95)
             if rating is not None and rating != '':
                 MultiRatingBadge().apply_to_poster(
                     str(original_path), {'imdb': rating}, str(output_path),
-                    badge_style=data.get('badge_style'),
-                    badge_positions={'imdb': data.get('imdb_position', {'x': 2, 'y': 2})})
+                    badge_style=badge_style,
+                    badge_positions=badge_positions)
             else:
                 original.save(output_path, 'JPEG', quality=95)
             if source or languages:
-                draw_media_badges(str(output_path), source, languages, data.get('media_overlay'))
+                draw_media_badges(str(output_path), source, languages, media_style)
             return {'image': base64.b64encode(output_path.read_bytes()).decode(),
                     'width': original.width, 'height': original.height}
     except (ValueError, TypeError, UnidentifiedImageError, json.JSONDecodeError) as exc:
@@ -607,6 +629,11 @@ async def preview_posters(request: PreviewRequest):
                 languages = audio_languages(item) if item.type == 'episode' and media_options.get('languages') else []
                 if not ratings and not source and not languages:
                     continue
+                style = manager.badge_style
+                positions = request.badge_positions
+                if item.type == 'episode':
+                    from src.rating_overlay.media_badges import episode_overlay_options
+                    style, positions, media_options = episode_overlay_options(style, positions, media_options)
 
                 # Use existing backup poster if available, otherwise download
                 poster_path = (manager.backup_manager.backup_dir / manager.library_name / 'episodes' / str(item.ratingKey) / 'original.jpg') if item.type == 'episode' else manager.backup_manager.get_original_poster(manager.library_name, item.title, year=getattr(item, 'year', None))
@@ -633,7 +660,7 @@ async def preview_posters(request: PreviewRequest):
                 if ratings:
                     manager.multi_rating_badge.apply_to_poster(
                         poster_path=str(poster_path), ratings=ratings, output_path=output_path,
-                        badge_style=manager.badge_style, badge_positions=request.badge_positions)
+                        badge_style=style, badge_positions=positions)
                 else:
                     from PIL import Image
                     with Image.open(poster_path) as img:

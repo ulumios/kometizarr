@@ -17,7 +17,7 @@ from .rating_fetcher import RatingFetcher
 from .badge_generator import BadgeGenerator
 from .overlay_composer import OverlayComposer
 from .multi_rating_badge import MultiRatingBadge
-from .media_badges import source_label, audio_languages, draw_media_badges
+from .media_badges import source_label, audio_languages, draw_media_badges, episode_overlay_options
 from ..utils.logger import ProgressTracker, print_header, print_subheader, print_summary
 
 logger = logging.getLogger(__name__)
@@ -346,19 +346,21 @@ class PlexPosterManager:
             ratings = {k: v for k, v in ratings.items() if self.rating_sources.get(k, True)}
             source = source_label(episode) if self.media_overlay.get('source', False) else None
             languages = audio_languages(episode) if self.media_overlay.get('languages', False) else []
+            episode_style, episode_positions, episode_media = episode_overlay_options(
+                self.badge_style, badge_positions, self.media_overlay)
             if not ratings and not source and not languages:
                 return None
             if self.dry_run:
                 return True
             if ratings:
                 self.multi_rating_badge.apply_to_poster(
-                    str(original), ratings, str(pending), badge_style=self.badge_style,
-                    badge_positions=badge_positions or {'imdb': {'x': 3, 'y': 3}})
+                    str(original), ratings, str(pending), badge_style=episode_style,
+                    badge_positions=episode_positions)
             else:
                 with Image.open(original) as img:
                     img.convert('RGB').save(pending, 'JPEG', quality=95)
             if source or languages:
-                draw_media_badges(str(pending), source, languages, self.media_overlay)
+                draw_media_badges(str(pending), source, languages, episode_media)
             episode.uploadPoster(filepath=str(pending))
             pending.replace(rendered)
             return True
