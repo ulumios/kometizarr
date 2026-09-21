@@ -90,6 +90,7 @@ class ProcessRequest(BaseModel):
     badge_style: Optional[Dict[str, Any]] = None  # Badge styling options
     rating_key: Optional[str] = None  # If set, process only this specific Plex item
     media_overlay: Optional[Dict[str, Any]] = None
+    include_episodes: bool = False
 
 
 class ProcessBatchRequest(BaseModel):
@@ -100,6 +101,7 @@ class ProcessBatchRequest(BaseModel):
     rating_sources: Optional[Dict[str, bool]] = None
     badge_style: Optional[Dict[str, Any]] = None
     media_overlay: Optional[Dict[str, Any]] = None
+    include_episodes: bool = False
 
 
 class LibraryStats(BaseModel):
@@ -135,7 +137,8 @@ async def get_libraries():
                 "name": lib.title,
                 "type": lib.type,
                 # Use totalSize instead of len(all()) - avoids fetching all items
-                "count": lib.totalSize if hasattr(lib, 'totalSize') else 0
+                "count": lib.totalSize if hasattr(lib, 'totalSize') else 0,
+                "episode_count": lib.totalViewSize(libtype='episode', includeCollections=False) if lib.type == 'show' else 0
             })
 
         return {"libraries": libraries}
@@ -144,7 +147,7 @@ async def get_libraries():
 
 
 @app.get("/api/library/{library_name}/stats")
-async def get_library_stats(library_name: str):
+async def get_library_stats(library_name: str, include_episodes: bool = False):
     """Get statistics for a library"""
     try:
         from plexapi.server import PlexServer
@@ -156,14 +159,18 @@ async def get_library_stats(library_name: str):
         library = server.library.section(library_name)
 
         # Use totalSize for fast count instead of fetching all items
-        total = library.totalSize
+        show_or_movie_count = library.totalSize
+        episode_count = library.totalViewSize(libtype='episode', includeCollections=False) if library.type == 'show' and include_episodes else 0
+        total = show_or_movie_count + episode_count
 
         # Check how many have backups (processed) - use fast glob count
         backup_dir = f"/backups/{library_name}"
         processed = 0
         if os.path.exists(backup_dir):
             import glob
-            processed = len(glob.glob(f"{backup_dir}/*"))
+            processed = len(glob.glob(f"{backup_dir}/*/poster_overlay.jpg"))
+            if episode_count:
+                processed += len(glob.glob(f"{backup_dir}/episodes/*/overlay.jpg"))
 
         success_rate = (processed / total * 100) if total > 0 else 0
 
@@ -209,6 +216,7 @@ async def start_processing_batch(request: ProcessBatchRequest):
                 rating_sources=request.rating_sources,
                 badge_style=request.badge_style,
                 media_overlay=request.media_overlay,
+                include_episodes=request.include_episodes,
             )
             await process_library_background(single)
 
@@ -395,6 +403,8 @@ async def process_library_background(request: ProcessRequest):
             all_items = [manager.library.fetchItem(int(request.rating_key))]
         else:
             all_items = manager.library.all()
+            if request.include_episodes and manager.library.type == 'show':
+                all_items += manager.library.all(libtype='episode')
             if request.limit:
                 all_items = all_items[:request.limit]
 
@@ -496,6 +506,7 @@ class PreviewRequest(BaseModel):
     badge_style: Optional[Dict[str, Any]] = None
     media_overlay: Optional[Dict[str, Any]] = None
     count: int = 3
+    include_episodes: bool = False
 
 
 @app.post('/api/preview-test')
@@ -573,6 +584,8 @@ async def preview_posters(request: PreviewRequest):
         )
 
         all_items = manager.library.all()
+        if request.include_episodes and manager.library.type == 'show':
+            all_items += manager.library.all(libtype='episode')
         sample = random.sample(all_items, min(request.count, len(all_items)))
 
         results = []

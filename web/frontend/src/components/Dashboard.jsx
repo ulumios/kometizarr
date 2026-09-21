@@ -4,6 +4,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
   const [libraries, setLibraries] = useState([])
   const [selectedLibrary, setSelectedLibrary] = useState(null)   // for preview / restore
   const [selectedLibraries, setSelectedLibraries] = useState([]) // for processing (names)
+  const [includeEpisodes, setIncludeEpisodes] = useState(false)
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [position, setPosition] = useState('northwest')  // Keep for backward compat display
@@ -124,7 +125,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     } else {
       setStats(null)
     }
-  }, [selectedLibraries])
+  }, [selectedLibraries, includeEpisodes])
 
   const fetchLibraries = async () => {
     try {
@@ -148,7 +149,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     try {
       const results = await Promise.all(
         libraryNames.map(name =>
-          fetch(`/api/library/${name}/stats`).then(r => r.json())
+          fetch(`/api/library/${encodeURIComponent(name)}/stats?include_episodes=${includeEpisodes}`).then(r => r.json())
         )
       )
       const aggregated = results.reduce(
@@ -331,6 +332,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
       rating_sources: ratingSources,
       badge_style: badgeStyle,
       media_overlay: mediaOverlay,
+      include_episodes: includeEpisodes,
     }
 
     try {
@@ -404,6 +406,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
           rating_sources: ratingSources,
           badge_style: badgeStyle,
           media_overlay: mediaOverlay,
+          include_episodes: includeEpisodes,
           count: 3,
         }),
       })
@@ -492,7 +495,8 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                 </div>
                 <div className="font-semibold pr-7">{lib.name}</div>
                 <div className="text-sm text-gray-400 mt-1">
-                  {lib.type === 'movie' ? '🎬' : '📺'} {lib.count} items
+                  {lib.type === 'movie' ? `🎬 ${lib.count} Filme` :
+                    `📺 ${lib.count} Serien${includeEpisodes ? ` + ${lib.episode_count || 0} Episoden` : ''}`}
                 </div>
               </button>
             )
@@ -528,6 +532,18 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
       {/* Processing Options */}
       <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
         <h2 className="text-xl font-semibold mb-4">Processing Options</h2>
+        <fieldset className="bg-gray-900 rounded-lg p-4 mb-5 space-y-2">
+          <legend className="text-sm font-medium px-1">Manueller Serienlauf</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="radio" name="episode-scope" checked={!includeEpisodes}
+              onChange={() => setIncludeEpisodes(false)} /> Nur Serienposter
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="radio" name="episode-scope" checked={includeEpisodes}
+              onChange={() => setIncludeEpisodes(true)} /> Serienposter und Episodenbilder
+          </label>
+          <p className="text-xs text-gray-400">Filmbibliotheken bleiben davon unberührt. Die Anzahl der Items und Backups wird passend zur Auswahl berechnet.</p>
+        </fieldset>
         <div className="bg-gray-900 rounded-lg p-4 mb-5 space-y-4">
           <h3 className="font-medium">Exact overlay positions</h3>
           <p className="text-xs text-gray-400">Pixel offsets on the original image. IMDb measures from top left; source from bottom left; languages from bottom right. Use the uploaded image below to verify the exact result.</p>
@@ -653,10 +669,12 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                             <g
                               className="cursor-move"
                               onMouseDown={(e) => handleBadgeMouseDown(e, 'imdb')}
+                              transform={`translate(${badgePositions.imdb.x_px != null ? badgePositions.imdb.x_px / 1000 * 120 : badgePositions.imdb.x / 100 * 120}, ${badgePositions.imdb.y_px != null ? badgePositions.imdb.y_px / 1400 * 168 : badgePositions.imdb.y / 100 * 168})`}
                             >
-                              <rect x={(badgePositions.imdb.x_px != null ? badgePositions.imdb.x_px / 1000 * 120 : badgePositions.imdb.x / 100 * 120)} y={(badgePositions.imdb.y_px != null ? badgePositions.imdb.y_px / 1400 * 168 : badgePositions.imdb.y / 100 * 168)} width={badgeWidth} height={badgeHeight} fill="#000" fillOpacity={opacity} rx="2" />
-                              <rect x={(badgePositions.imdb.x_px != null ? badgePositions.imdb.x_px / 1000 * 120 : badgePositions.imdb.x / 100 * 120) + badgeWidth * 0.1} y={(badgePositions.imdb.y_px != null ? badgePositions.imdb.y_px / 1400 * 168 : badgePositions.imdb.y / 100 * 168) + badgeHeight * 0.05} width={badgeWidth * 0.8} height={logoAreaHeight * 0.85} fill="#f5c518" fillOpacity={0.35} rx="1" className="pointer-events-none" />
-                              <text x={(badgePositions.imdb.x_px != null ? badgePositions.imdb.x_px / 1000 * 120 : badgePositions.imdb.x / 100 * 120) + badgeWidth / 2} y={(badgePositions.imdb.y_px != null ? badgePositions.imdb.y_px / 1400 * 168 : badgePositions.imdb.y / 100 * 168) + badgeHeight * 0.80} fontSize={fontSize} fill={badgeStyle.rating_color || '#FFD700'} textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontStyle={fontStyle} fontWeight={fontWeight} className="pointer-events-none select-none">I</text>
+                              <rect width={badgeWidth} height={badgeWidth * 1.04} fill="#0f1116" fillOpacity=".86" rx="2" />
+                              <rect x={badgeWidth * .05} y={badgeWidth * .08} width={badgeWidth * .90} height={badgeWidth * .42} fill="#f5c518" rx="1" />
+                              <text x={badgeWidth / 2} y={badgeWidth * .29} fontSize={badgeWidth * .23} fill="#111" textAnchor="middle" dominantBaseline="middle" fontFamily="sans-serif" fontWeight="bold" className="pointer-events-none select-none">IMDb</text>
+                              <text x={badgeWidth / 2} y={badgeWidth * .78} fontSize={badgeWidth * .31} fill="white" textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontWeight="bold" className="pointer-events-none select-none">8.4</text>
                             </g>
                           )}
 

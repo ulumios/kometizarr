@@ -220,6 +220,9 @@ class MultiRatingBadge:
         """
         poster_width, poster_height = poster_size
 
+        if source == 'imdb':
+            return self._create_imdb_badge(rating, poster_width, badge_style or {})
+
         # Apply custom styling or use defaults
         style = badge_style or {}
         badge_size_percent = style.get('individual_badge_size', 12) / 100  # 12% of poster width by default
@@ -365,6 +368,41 @@ class MultiRatingBadge:
                 anchor="mm"  # Middle-middle anchor
             )
 
+        return badge
+
+    def _create_imdb_badge(self, rating: float, poster_width: int, style: Dict[str, Any]) -> Image.Image:
+        """Compact IMDb mark and score on one dark rounded tile."""
+        width = max(36, round(poster_width * style.get('individual_badge_size', 12) / 100))
+        height = round(width * 1.04)
+        badge = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(badge)
+        opacity = max(185, int(style.get('background_opacity', 210)))
+        draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=round(width * .14),
+                               fill=(15, 17, 22, opacity))
+
+        logo = self.logos.get('imdb')
+        if logo is not None:
+            bounds = logo.getbbox()
+            if bounds:
+                logo = logo.crop(bounds)
+                scale = float(style.get('logo_size_multiplier', 1.0))
+                logo_width = max(1, min(width - 6, round(width * .90 * scale)))
+                logo_height = max(1, round(logo.height * logo_width / logo.width))
+                max_height = round(height * .52)
+                if logo_height > max_height:
+                    logo_height = max_height
+                    logo_width = round(logo.width * logo_height / logo.height)
+                logo = logo.resize((logo_width, logo_height), Image.Resampling.LANCZOS)
+                badge.alpha_composite(logo, ((width - logo_width) // 2, round(height * .08)))
+
+        font_size = max(12, round(width * .31 * float(style.get('font_size_multiplier', 1.0))))
+        font_path = self.FONT_PATHS.get(style.get('font_family'), self.FONT_PATHS['DejaVu Sans Bold'])
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+        except OSError:
+            font = ImageFont.load_default()
+        draw.text((width / 2, height * .75), f'{rating:.1f}', font=font,
+                  fill='white', anchor='mm', stroke_width=0)
         return badge
 
     def _draw_rating_row(
