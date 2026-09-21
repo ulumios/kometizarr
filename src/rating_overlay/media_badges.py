@@ -46,14 +46,18 @@ def audio_languages(item):
     return [codes[code] for code in result]
 
 
-def prepare_episode_canvas(source_path, destination_path):
-    """Match Kometa's fixed 1920 x 1080 episode overlay canvas."""
+def prepare_canvas(source_path, destination_path, episode=False):
+    """Render the clean original onto Kometa's episode/poster canvas."""
     from PIL import ImageOps
     with Image.open(source_path) as source:
         image = ImageOps.exif_transpose(source).convert('RGB')
-        image = image.resize((1920, 1080), Image.Resampling.LANCZOS)
+        image = image.resize((1920, 1080) if episode else (1000, 1500), Image.Resampling.LANCZOS)
         image.save(destination_path, 'JPEG', quality=95)
     return destination_path
+
+
+def prepare_episode_canvas(source_path, destination_path):
+    return prepare_canvas(source_path, destination_path, episode=True)
 
 
 def episode_overlay_options(badge_style=None, badge_positions=None, media_settings=None):
@@ -92,8 +96,8 @@ def draw_media_badges(path, source=None, languages=(), settings=None, status=Non
         pad = max(2, size // 5) if episode else max(5, size // 3)
         bw, bh = box[2] + 2 * pad, box[3] - box[1] + 2 * pad
         dx, dy = offset(key)
-        x = min(width - bw, dx) if left else width - dx - bw
-        y = max(0, height - dy - bh)
+        x = max(0, min(width - bw, dx if left else width - dx - bw))
+        y = max(0, min(height - bh, height - dy - bh))
         draw.rounded_rectangle((x, y, x + bw, y + bh), radius=pad,
                                fill=(0, 0, 0, int(settings.get('opacity', 180))))
         draw.text((x + pad, y + pad - box[1]), label, font=font, fill='white')
@@ -114,7 +118,7 @@ def draw_media_badges(path, source=None, languages=(), settings=None, status=Non
             total = sum(flag_w + gap + tw for tw in widths) + gap * (len(labels) - 1) + 2 * pad
             bh = size + 2 * pad
         dx, dy = offset('languages_position')
-        x, y = max(0, width - dx - total), max(0, height - dy - bh)
+        x, y = max(0, min(width - total, width - dx - total)), max(0, min(height - bh, height - dy - bh))
         draw.rounded_rectangle((x, y, x + total, y + bh), radius=pad,
                                fill=(0, 0, 0, int(settings.get('opacity', 180))))
         cursor = x + pad

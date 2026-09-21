@@ -24,7 +24,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewResults, setPreviewResults] = useState(null)  // null = closed, [] = loading/empty
   const [mediaOverlay, setMediaOverlay] = useState({ source: true, languages: true, status: false,
-    source_position: { x: 30, y: 30 }, languages_position: { x: 30, y: 30 }, status_position: { x: 30, y: 80 },
+    source_position: { x: 30, y: 30 }, languages_position: { x: 30, y: 30 }, status_position: { x: 30, y: 120 },
     source_labels: { bluray: 'BluRay', prerelease: 'PreRelease' },
     status_labels: { running: 'Läuft', ended: 'Abgeschlossen', canceled: 'Abgesetzt' }, font_percent: 4, opacity: 180 })
   const [testImage, setTestImage] = useState(null)
@@ -214,83 +214,13 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     const clickX = e.clientX - rect.left
     const clickY = e.clientY - rect.top
 
-    // Calculate position as percentage of poster dimensions (0-100)
-    // Individual badges are small (~12% of poster width)
-    const badgeWidthPercent = badgeStyle.individual_badge_size || 12
-    const badgeHeightPercent = badgeWidthPercent * 1.4  // 1.4x aspect ratio
-
-    // Center badge on cursor
-    let xPercent = (clickX / rect.width) * 100 - (badgeWidthPercent / 2)
-    let yPercent = (clickY / rect.height) * 100 - (badgeHeightPercent / 2)
-
-    // Detect alignment with other badges (before clamping)
-    const guides = []
-    const threshold = 2  // Snap within 2%
-    let alignedX = false
-    let alignedY = false
-
-    Object.keys(badgePositions).forEach(otherSource => {
-      if (otherSource === source || !ratingSources[otherSource]) return
-
-      const other = badgePositions[otherSource]
-      const otherRight = other.x + badgeWidthPercent
-      const otherBottom = other.y + badgeHeightPercent
-      const otherCenterX = other.x + badgeWidthPercent / 2
-      const otherCenterY = other.y + badgeHeightPercent / 2
-
-      const dragRight = xPercent + badgeWidthPercent
-      const dragBottom = yPercent + badgeHeightPercent
-      const dragCenterX = xPercent + badgeWidthPercent / 2
-      const dragCenterY = yPercent + badgeHeightPercent / 2
-
-      // Check vertical alignments (X-axis) - only snap if not already aligned
-      if (!alignedX) {
-        if (Math.abs(xPercent - other.x) < threshold) {
-          // Left edges align
-          xPercent = other.x
-          guides.push({ type: 'vertical', position: other.x })
-          alignedX = true
-        } else if (Math.abs(dragRight - otherRight) < threshold) {
-          // Right edges align
-          xPercent = otherRight - badgeWidthPercent
-          guides.push({ type: 'vertical', position: otherRight })
-          alignedX = true
-        } else if (Math.abs(dragCenterX - otherCenterX) < threshold) {
-          // Centers align
-          xPercent = otherCenterX - badgeWidthPercent / 2
-          guides.push({ type: 'vertical', position: otherCenterX })
-          alignedX = true
-        }
-      }
-
-      // Check horizontal alignments (Y-axis) - only snap if not already aligned
-      if (!alignedY) {
-        if (Math.abs(yPercent - other.y) < threshold) {
-          // Top edges align
-          yPercent = other.y
-          guides.push({ type: 'horizontal', position: other.y })
-          alignedY = true
-        } else if (Math.abs(dragBottom - otherBottom) < threshold) {
-          // Bottom edges align
-          yPercent = otherBottom - badgeHeightPercent
-          guides.push({ type: 'horizontal', position: otherBottom })
-          alignedY = true
-        } else if (Math.abs(dragCenterY - otherCenterY) < threshold) {
-          // Centers align
-          yPercent = otherCenterY - badgeHeightPercent / 2
-          guides.push({ type: 'horizontal', position: otherCenterY })
-          alignedY = true
-        }
-      }
-    })
-
-    // Clamp to edges AFTER alignment - simple 0-100% bounds (badges can overlap edges)
-    xPercent = Math.max(0, Math.min(xPercent, 100))
-    yPercent = Math.max(0, Math.min(yPercent, 100))
-
-    setAlignmentGuides(guides)
-
-    const newPosition = { x: Math.round(xPercent), y: Math.round(yPercent) }
+    // The poster preview and the final poster use one 1000 × 1500 canvas.
+    const badgeWidth = (badgeStyle.individual_badge_size || 9) / 100 * 1000
+    const badgeHeight = badgeWidth * (source === 'imdb' ? 1.04 : 1.4)
+    const xPx = Math.round(Math.max(0, Math.min(1000 - badgeWidth, clickX / rect.width * 1000 - badgeWidth / 2)))
+    const yPx = Math.round(Math.max(0, Math.min(1500 - badgeHeight, clickY / rect.height * 1500 - badgeHeight / 2)))
+    setAlignmentGuides([])
+    const newPosition = { x_px: xPx, y_px: yPx }
 
     // Update only this badge's position
     const updated = { ...badgePositions, [source]: newPosition }
@@ -680,21 +610,19 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                 {/* LEFT: Draggable Poster Preview */}
                 <div className="flex-shrink-0">
                   <svg
-                    viewBox="0 0 120 168"
+                    viewBox="0 0 120 180"
                     className="w-48 h-auto select-none"
                     onMouseMove={handlePosterMouseMove}
                     onMouseUp={handleMouseUp}
                     onMouseLeave={handleMouseUp}
                   >
                     {/* Poster Background */}
-                    <rect x="0" y="0" width="120" height="168" fill="#1f2937" stroke="#4b5563" strokeWidth="2" rx="3" />
+                    <rect x="0" y="0" width="120" height="180" fill="#1f2937" stroke="#4b5563" strokeWidth="2" rx="3" />
 
                     {/* Individual Badges - dynamically sized and styled */}
                     {(() => {
                       // Calculate badge dimensions based on style settings
-                      const badgeSizePercent = includeEpisodes
-                        ? (mediaOverlay.episode_badge_percent ?? 9)
-                        : (badgeStyle.individual_badge_size || 9)
+                      const badgeSizePercent = badgeStyle.individual_badge_size || 9
                       const badgeWidth = (badgeSizePercent / 100) * 120  // Scale to SVG viewBox
                       const badgeHeight = badgeWidth * 1.4  // 1.4 aspect ratio
                       const logoMultiplier = badgeStyle.logo_size_multiplier || 1.0
@@ -731,9 +659,9 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                               className="cursor-move"
                               onMouseDown={(e) => handleBadgeMouseDown(e, 'tmdb')}
                             >
-                              <rect x={(badgePositions.tmdb.x_px != null ? badgePositions.tmdb.x_px / 1000 * 120 : badgePositions.tmdb.x / 100 * 120)} y={(badgePositions.tmdb.y_px != null ? badgePositions.tmdb.y_px / 1400 * 168 : badgePositions.tmdb.y / 100 * 168)} width={badgeWidth} height={badgeHeight} fill="#000" fillOpacity={opacity} rx="2" />
-                              <rect x={(badgePositions.tmdb.x_px != null ? badgePositions.tmdb.x_px / 1000 * 120 : badgePositions.tmdb.x / 100 * 120) + badgeWidth * 0.1} y={(badgePositions.tmdb.y_px != null ? badgePositions.tmdb.y_px / 1400 * 168 : badgePositions.tmdb.y / 100 * 168) + badgeHeight * 0.05} width={badgeWidth * 0.8} height={logoAreaHeight * 0.85} fill="#4a9eff" fillOpacity={0.35} rx="1" className="pointer-events-none" />
-                              <text x={(badgePositions.tmdb.x_px != null ? badgePositions.tmdb.x_px / 1000 * 120 : badgePositions.tmdb.x / 100 * 120) + badgeWidth / 2} y={(badgePositions.tmdb.y_px != null ? badgePositions.tmdb.y_px / 1400 * 168 : badgePositions.tmdb.y / 100 * 168) + badgeHeight * 0.80} fontSize={fontSize} fill={badgeStyle.rating_color || '#FFD700'} textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontStyle={fontStyle} fontWeight={fontWeight} className="pointer-events-none select-none">T</text>
+                              <rect x={(badgePositions.tmdb.x_px != null ? badgePositions.tmdb.x_px / 1000 * 120 : badgePositions.tmdb.x / 100 * 120)} y={(badgePositions.tmdb.y_px != null ? badgePositions.tmdb.y_px / 1500 * 180 : badgePositions.tmdb.y / 100 * 180)} width={badgeWidth} height={badgeHeight} fill="#000" fillOpacity={opacity} rx="2" />
+                              <rect x={(badgePositions.tmdb.x_px != null ? badgePositions.tmdb.x_px / 1000 * 120 : badgePositions.tmdb.x / 100 * 120) + badgeWidth * 0.1} y={(badgePositions.tmdb.y_px != null ? badgePositions.tmdb.y_px / 1500 * 180 : badgePositions.tmdb.y / 100 * 180) + badgeHeight * 0.05} width={badgeWidth * 0.8} height={logoAreaHeight * 0.85} fill="#4a9eff" fillOpacity={0.35} rx="1" className="pointer-events-none" />
+                              <text x={(badgePositions.tmdb.x_px != null ? badgePositions.tmdb.x_px / 1000 * 120 : badgePositions.tmdb.x / 100 * 120) + badgeWidth / 2} y={(badgePositions.tmdb.y_px != null ? badgePositions.tmdb.y_px / 1500 * 180 : badgePositions.tmdb.y / 100 * 180) + badgeHeight * 0.80} fontSize={fontSize} fill={badgeStyle.rating_color || '#FFD700'} textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontStyle={fontStyle} fontWeight={fontWeight} className="pointer-events-none select-none">T</text>
                             </g>
                           )}
 
@@ -741,7 +669,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                             <g
                               className="cursor-move"
                               onMouseDown={(e) => handleBadgeMouseDown(e, 'imdb')}
-                              transform={`translate(${badgePositions.imdb.x_px != null ? badgePositions.imdb.x_px / 1000 * 120 : badgePositions.imdb.x / 100 * 120}, ${badgePositions.imdb.y_px != null ? badgePositions.imdb.y_px / 1400 * 168 : badgePositions.imdb.y / 100 * 168})`}
+                              transform={`translate(${badgePositions.imdb.x_px != null ? badgePositions.imdb.x_px / 1000 * 120 : badgePositions.imdb.x / 100 * 120}, ${badgePositions.imdb.y_px != null ? badgePositions.imdb.y_px / 1500 * 180 : badgePositions.imdb.y / 100 * 180})`}
                             >
                               <rect width={badgeWidth} height={badgeWidth * 1.04} fill="#0f1116" fillOpacity={(badgeStyle.background_opacity ?? 215) / 255} rx="2" />
                               <rect x={badgeWidth * .05} y={badgeWidth * .08} width={badgeWidth * .90} height={badgeWidth * .42} fill="#f5c518" rx="1" />
@@ -755,9 +683,9 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                               className="cursor-move"
                               onMouseDown={(e) => handleBadgeMouseDown(e, 'rt_critic')}
                             >
-                              <rect x={(badgePositions.rt_critic.x_px != null ? badgePositions.rt_critic.x_px / 1000 * 120 : badgePositions.rt_critic.x / 100 * 120)} y={(badgePositions.rt_critic.y_px != null ? badgePositions.rt_critic.y_px / 1400 * 168 : badgePositions.rt_critic.y / 100 * 168)} width={badgeWidth} height={badgeHeight} fill="#000" fillOpacity={opacity} rx="2" />
-                              <rect x={(badgePositions.rt_critic.x_px != null ? badgePositions.rt_critic.x_px / 1000 * 120 : badgePositions.rt_critic.x / 100 * 120) + badgeWidth * 0.1} y={(badgePositions.rt_critic.y_px != null ? badgePositions.rt_critic.y_px / 1400 * 168 : badgePositions.rt_critic.y / 100 * 168) + badgeHeight * 0.05} width={badgeWidth * 0.8} height={logoAreaHeight * 0.85} fill="#fa320a" fillOpacity={0.35} rx="1" className="pointer-events-none" />
-                              <text x={(badgePositions.rt_critic.x_px != null ? badgePositions.rt_critic.x_px / 1000 * 120 : badgePositions.rt_critic.x / 100 * 120) + badgeWidth / 2} y={(badgePositions.rt_critic.y_px != null ? badgePositions.rt_critic.y_px / 1400 * 168 : badgePositions.rt_critic.y / 100 * 168) + badgeHeight * 0.80} fontSize={fontSize} fill={badgeStyle.rating_color || '#FFD700'} textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontStyle={fontStyle} fontWeight={fontWeight} className="pointer-events-none select-none">C</text>
+                              <rect x={(badgePositions.rt_critic.x_px != null ? badgePositions.rt_critic.x_px / 1000 * 120 : badgePositions.rt_critic.x / 100 * 120)} y={(badgePositions.rt_critic.y_px != null ? badgePositions.rt_critic.y_px / 1500 * 180 : badgePositions.rt_critic.y / 100 * 180)} width={badgeWidth} height={badgeHeight} fill="#000" fillOpacity={opacity} rx="2" />
+                              <rect x={(badgePositions.rt_critic.x_px != null ? badgePositions.rt_critic.x_px / 1000 * 120 : badgePositions.rt_critic.x / 100 * 120) + badgeWidth * 0.1} y={(badgePositions.rt_critic.y_px != null ? badgePositions.rt_critic.y_px / 1500 * 180 : badgePositions.rt_critic.y / 100 * 180) + badgeHeight * 0.05} width={badgeWidth * 0.8} height={logoAreaHeight * 0.85} fill="#fa320a" fillOpacity={0.35} rx="1" className="pointer-events-none" />
+                              <text x={(badgePositions.rt_critic.x_px != null ? badgePositions.rt_critic.x_px / 1000 * 120 : badgePositions.rt_critic.x / 100 * 120) + badgeWidth / 2} y={(badgePositions.rt_critic.y_px != null ? badgePositions.rt_critic.y_px / 1500 * 180 : badgePositions.rt_critic.y / 100 * 180) + badgeHeight * 0.80} fontSize={fontSize} fill={badgeStyle.rating_color || '#FFD700'} textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontStyle={fontStyle} fontWeight={fontWeight} className="pointer-events-none select-none">C</text>
                             </g>
                           )}
 
@@ -766,9 +694,9 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                               className="cursor-move"
                               onMouseDown={(e) => handleBadgeMouseDown(e, 'rt_audience')}
                             >
-                              <rect x={(badgePositions.rt_audience.x_px != null ? badgePositions.rt_audience.x_px / 1000 * 120 : badgePositions.rt_audience.x / 100 * 120)} y={(badgePositions.rt_audience.y_px != null ? badgePositions.rt_audience.y_px / 1400 * 168 : badgePositions.rt_audience.y / 100 * 168)} width={badgeWidth} height={badgeHeight} fill="#000" fillOpacity={opacity} rx="2" />
-                              <rect x={(badgePositions.rt_audience.x_px != null ? badgePositions.rt_audience.x_px / 1000 * 120 : badgePositions.rt_audience.x / 100 * 120) + badgeWidth * 0.1} y={(badgePositions.rt_audience.y_px != null ? badgePositions.rt_audience.y_px / 1400 * 168 : badgePositions.rt_audience.y / 100 * 168) + badgeHeight * 0.05} width={badgeWidth * 0.8} height={logoAreaHeight * 0.85} fill="#fa320a" fillOpacity={0.25} rx="1" className="pointer-events-none" />
-                              <text x={(badgePositions.rt_audience.x_px != null ? badgePositions.rt_audience.x_px / 1000 * 120 : badgePositions.rt_audience.x / 100 * 120) + badgeWidth / 2} y={(badgePositions.rt_audience.y_px != null ? badgePositions.rt_audience.y_px / 1400 * 168 : badgePositions.rt_audience.y / 100 * 168) + badgeHeight * 0.80} fontSize={fontSize} fill={badgeStyle.rating_color || '#FFD700'} textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontStyle={fontStyle} fontWeight={fontWeight} className="pointer-events-none select-none">A</text>
+                              <rect x={(badgePositions.rt_audience.x_px != null ? badgePositions.rt_audience.x_px / 1000 * 120 : badgePositions.rt_audience.x / 100 * 120)} y={(badgePositions.rt_audience.y_px != null ? badgePositions.rt_audience.y_px / 1500 * 180 : badgePositions.rt_audience.y / 100 * 180)} width={badgeWidth} height={badgeHeight} fill="#000" fillOpacity={opacity} rx="2" />
+                              <rect x={(badgePositions.rt_audience.x_px != null ? badgePositions.rt_audience.x_px / 1000 * 120 : badgePositions.rt_audience.x / 100 * 120) + badgeWidth * 0.1} y={(badgePositions.rt_audience.y_px != null ? badgePositions.rt_audience.y_px / 1500 * 180 : badgePositions.rt_audience.y / 100 * 180) + badgeHeight * 0.05} width={badgeWidth * 0.8} height={logoAreaHeight * 0.85} fill="#fa320a" fillOpacity={0.25} rx="1" className="pointer-events-none" />
+                              <text x={(badgePositions.rt_audience.x_px != null ? badgePositions.rt_audience.x_px / 1000 * 120 : badgePositions.rt_audience.x / 100 * 120) + badgeWidth / 2} y={(badgePositions.rt_audience.y_px != null ? badgePositions.rt_audience.y_px / 1500 * 180 : badgePositions.rt_audience.y / 100 * 180) + badgeHeight * 0.80} fontSize={fontSize} fill={badgeStyle.rating_color || '#FFD700'} textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontStyle={fontStyle} fontWeight={fontWeight} className="pointer-events-none select-none">A</text>
                             </g>
                           )}
                         </>
@@ -777,19 +705,19 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
 
                     {mediaOverlay.source && <g>
                       <rect x={(mediaOverlay.source_position?.x ?? 30) / 1000 * 120}
-                        y={168 - (mediaOverlay.source_position?.y ?? 30) / 1400 * 168 - 8}
+                        y={180 - (mediaOverlay.source_position?.y ?? 30) / 1500 * 180 - 8}
                         width="30" height="8" rx="2" fill="#000" fillOpacity=".8" />
                       <text x={(mediaOverlay.source_position?.x ?? 30) / 1000 * 120 + 2}
-                        y={168 - (mediaOverlay.source_position?.y ?? 30) / 1400 * 168 - 2}
-                        fontSize="5" fill="white">{testSource || 'BluRay'}</text>
+                        y={180 - (mediaOverlay.source_position?.y ?? 30) / 1500 * 180 - 2}
+                        fontSize="5" fill="white">{mediaOverlay.source_labels?.bluray ?? 'BluRay'}</text>
                     </g>}
-                    {mediaOverlay.languages && <g>
-                      <rect x={120 - (mediaOverlay.languages_position?.x ?? 30) / 1000 * 120 - 32}
-                        y={168 - (mediaOverlay.languages_position?.y ?? 30) / 1400 * 168 - 8}
-                        width="32" height="8" rx="2" fill="#000" fillOpacity=".8" />
-                      <text x={120 - (mediaOverlay.languages_position?.x ?? 30) / 1000 * 120 - 30}
-                        y={168 - (mediaOverlay.languages_position?.y ?? 30) / 1400 * 168 - 2}
-                        fontSize="5" fill="white">🇩🇪 DE 🇬🇧 EN</text>
+                    {mediaOverlay.status && <g>
+                      <rect x={(mediaOverlay.status_position?.x ?? 30) / 1000 * 120}
+                        y={180 - (mediaOverlay.status_position?.y ?? 120) / 1500 * 180 - 8}
+                        width="39" height="8" rx="2" fill="#000" fillOpacity=".8" />
+                      <text x={(mediaOverlay.status_position?.x ?? 30) / 1000 * 120 + 2}
+                        y={180 - (mediaOverlay.status_position?.y ?? 120) / 1500 * 180 - 2}
+                        fontSize="5" fill="white">{mediaOverlay.status_labels?.[testStatus || 'ended'] ?? 'Abgeschlossen'}</text>
                     </g>}
 
                     {/* Alignment Guides */}
@@ -803,7 +731,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                             x1={x}
                             y1={0}
                             x2={x}
-                            y2={168}
+                            y2={180}
                             stroke="#3b82f6"
                             strokeWidth="1"
                             strokeDasharray="4,4"
@@ -812,7 +740,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                         )
                       } else {
                         // Horizontal line (for Y-axis alignment)
-                        const y = (guide.position / 100) * 168
+                        const y = (guide.position / 100) * 180
                         return (
                           <line
                             key={`guide-${index}`}
@@ -829,6 +757,29 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                       }
                     })}
                   </svg>
+                  {(includeEpisodes || mediaOverlay.languages) && (
+                    <div className="mt-3">
+                      <div className="text-xs text-gray-400 mb-1">Episodenbild (16:9): Sprachen untereinander</div>
+                      <svg viewBox="0 0 192 108" className="w-48 h-auto" aria-label="Episoden-Vorschau">
+                        <rect width="192" height="108" rx="3" fill="#1f2937" stroke="#4b5563" />
+                        {ratingSources.imdb && <g transform={`translate(${(badgePositions.imdb?.x_px ?? 30) / 1920 * 192}, ${(badgePositions.imdb?.y_px ?? 28) / 1080 * 108})`}>
+                          <rect width="16" height="17" rx="2" fill="#0f1116" />
+                          <rect x="1" y="1" width="14" height="7" rx="1" fill="#f5c518" />
+                          <text x="8" y="6" textAnchor="middle" fontSize="4" fontWeight="bold" fill="#111">IMDb</text>
+                          <text x="8" y="14" textAnchor="middle" fontSize="6" fontWeight="bold" fill="white">8.4</text>
+                        </g>}
+                        {mediaOverlay.source && <g transform={`translate(${(mediaOverlay.source_position?.x ?? 30) / 1920 * 192}, ${108 - (mediaOverlay.source_position?.y ?? 30) / 1080 * 108 - 8})`}>
+                          <rect width="27" height="8" rx="2" fill="#000" fillOpacity=".8" />
+                          <text x="2" y="6" fontSize="5" fill="white">{mediaOverlay.source_labels?.bluray ?? 'BluRay'}</text>
+                        </g>}
+                        {mediaOverlay.languages && <g transform={`translate(${192 - (mediaOverlay.languages_position?.x ?? 30) / 1920 * 192 - 23}, ${108 - (mediaOverlay.languages_position?.y ?? 30) / 1080 * 108 - 17})`}>
+                          <rect width="23" height="17" rx="2" fill="#000" fillOpacity=".8" />
+                          <text x="2" y="7" fontSize="6" fill="white">🇩🇪 DE</text>
+                          <text x="2" y="14" fontSize="6" fill="white">🇺🇸 EN</text>
+                        </g>}
+                      </svg>
+                    </div>
+                  )}
                   <div className="text-xs text-gray-500 mt-2 space-y-1">
                     <p className="font-medium">💡 Drag badges to position</p>
                     <div className="text-gray-400 leading-relaxed">

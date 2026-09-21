@@ -17,7 +17,7 @@ from .rating_fetcher import RatingFetcher
 from .badge_generator import BadgeGenerator
 from .overlay_composer import OverlayComposer
 from .multi_rating_badge import MultiRatingBadge
-from .media_badges import source_label, audio_languages, draw_media_badges, episode_overlay_options, prepare_episode_canvas, show_status_label
+from .media_badges import source_label, audio_languages, draw_media_badges, episode_overlay_options, prepare_episode_canvas, prepare_canvas, show_status_label
 from ..utils.logger import ProgressTracker, print_header, print_subheader, print_summary
 
 logger = logging.getLogger(__name__)
@@ -277,10 +277,13 @@ class PlexPosterManager:
                 logger.error(f"✗ {movie.title}: Failed to backup poster")
                 return False
 
+            # Compose on the same fixed portrait canvas used by the preview.
+            canvas_path = self.temp_dir / f"{movie.ratingKey}_canvas.jpg"
+            prepare_canvas(original_path, canvas_path)
             # Apply multi-rating overlay
             overlay_path = self.temp_dir / f"{movie.ratingKey}_overlay.jpg"
             self.multi_rating_badge.apply_to_poster(
-                poster_path=str(original_path),
+                poster_path=str(canvas_path),
                 ratings=ratings,
                 output_path=str(overlay_path),
                 position=position,
@@ -311,6 +314,7 @@ class PlexPosterManager:
 
             # Cleanup temp file
             overlay_path.unlink()
+            canvas_path.unlink(missing_ok=True)
 
             return True
 
