@@ -176,6 +176,7 @@ class ProcessRequest(BaseModel):
     use_imdb_cache: bool = False
     record_results: bool = False
     reset_kometa: bool = False
+    poster_source: Optional[str] = None
 
 
 class ProcessBatchRequest(BaseModel):
@@ -681,7 +682,9 @@ async def process_library_background(request: ProcessRequest):
                 manual_queue.remove(request.library_name, item)
             kometa_label = has_overlay_label(item)
             already_processed = has_kometizarr_overlay(manager.backup_manager, request.library_name, item)
-            needs_reset = kometa_label and (request.force or request.reset_kometa or (
+            use_current_plex = request.poster_source == 'current'
+            render_force = request.force and not use_current_plex
+            needs_reset = kometa_label and (render_force or request.reset_kometa or (
                 not already_processed and _load_settings()['kometa_conflicts'].get('auto_reset', False)))
             if kometa_label and not already_processed and not needs_reset:
                 processing_state['skipped'] += 1
@@ -689,6 +692,25 @@ async def process_library_background(request: ProcessRequest):
                     processing_state['item_results'][str(item.ratingKey)] = 'Kometa-Konflikt: Reset erforderlich'
                 await broadcast_progress()
                 continue
+
+            if use_current_plex:
+                if item.type == 'episode':
+                    series_title = (getattr(item, 'grandparentTitle', None)
+                                    or getattr(item, 'parentTitle', None)
+                                    or 'Unknown Series')
+                    series_year = getattr(item, 'grandparentYear', None)
+                    episode_dir = manager.backup_manager._get_backup_path(
+                        request.library_name, series_title, year=series_year)
+                    season_no = int(getattr(item, 'parentIndex', None)
+                                    or getattr(item, 'seasonIndex', None) or 0)
+                    episode_no = int(getattr(item, 'index', None) or 0)
+                    stem = f'S{season_no:02d}E{episode_no:02d}'
+                    (episode_dir / f'{stem}-poster_original.jpg').unlink(missing_ok=True)
+                    (episode_dir / f'{stem}-poster_overlay.jpg').unlink(missing_ok=True)
+                else:
+                    item_dir = manager.backup_manager._get_backup_path(
+                        request.library_name, item.title, year=getattr(item, 'year', None))
+                    shutil.rmtree(item_dir, ignore_errors=True)
             if needs_reset and (not select_agent_poster(item) or not _backup_clean_plex_poster(manager, item)):
                 processing_state['skipped'] += 1
                 if request.record_results:
@@ -703,13 +725,13 @@ async def process_library_background(request: ProcessRequest):
                 result = manager.process_movie(
                     item,
                     position=request.position,  # Not used in 4-badge mode, but kept for compat
-                    force=request.force,
+                    force=render_force,
                     badge_positions=request.badge_positions
                 )
             else:
                 # Legacy unified badge mode
                 position_param = request.badge_position if request.badge_position else request.position
-                result = manager.process_movie(item, position=position_param, force=request.force)
+                result = manager.process_movie(item, position=position_param, force=render_force)
 
             # Handle three-state return: True=success, None=skip, False=fail
             if result is None:

@@ -266,20 +266,13 @@ class PlexPosterManager:
 
             # Get or create backup (never re-download if backup exists)
             # When force=True, we just use existing backup to apply fresh overlay
-            if force:
-                import shutil
-                old_backup = self.backup_manager._get_backup_path(
-                    self.library_name, movie.title, year=movie.year)
-                if old_backup.exists():
-                    shutil.rmtree(old_backup)
-
             original_path = self.backup_manager.backup_poster(
                 library_name=self.library_name,
                 item_title=movie.title,
                 poster_url=poster_url,
                 item_metadata=metadata,
                 plex_token=self.plex_token,
-                force=force,
+                force=False,
                 year=movie.year
             )
 
@@ -356,9 +349,6 @@ class PlexPosterManager:
             canvas = backup / 'canvas.pending.jpg'
             if rendered.exists() and not force:
                 return None
-            if force:
-                original.unlink(missing_ok=True)
-                rendered.unlink(missing_ok=True)
             if not original.exists():
                 thumb = getattr(episode, 'thumb', None)
                 if not thumb:
