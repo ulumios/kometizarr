@@ -483,7 +483,14 @@ async def restore_library_background(request: ProcessRequest):
                         else:
                             overlay = backup_manager._get_backup_path(request.library_name, item.title, year=item.year) / 'poster_overlay.jpg'
                         overlay.unlink(missing_ok=True)
-                        restore_state["restored"] += 1
+                        # Plex reset removes the complete Kometizarr backup.
+                        if item.type == 'episode':
+                            item_backup = backup_manager.backup_dir / request.library_name / 'episodes' / str(item.ratingKey)
+                        else:
+                            item_backup = backup_manager._get_backup_path(request.library_name, item.title, year=item.year)
+                        if item_backup.exists():
+                            shutil.rmtree(item_backup)
+
                 except Exception:
                     logger.exception('Failed to reset Plex poster for %s', item.ratingKey)
                     restore_state["failed"] += 1
