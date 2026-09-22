@@ -1,0 +1,189 @@
+diff a/web/frontend/src/components/LibraryBrowser.jsx b/web/frontend/src/components/LibraryBrowser.jsx	(rejected hunks)
+@@ -1,20 +1,45 @@
+ import { useEffect, useState } from 'react'
+ 
+-export default function LibraryBrowser({ onStartProcessing }) {
++export default function LibraryBrowser({ onStartProcessing, focusTarget }) {
+   const [libraries, setLibraries] = useState([])
+   const [library, setLibrary] = useState('')
+   const [parent, setParent] = useState(null)
++  const [trail, setTrail] = useState([])
+   const [page, setPage] = useState(1)
++  const [search, setSearch] = useState('')
++  const [query, setQuery] = useState('')
++  const [searchEpisodes, setSearchEpisodes] = useState(false)
+   const [items, setItems] = useState([])
+   const [total, setTotal] = useState(0)
+   const [selected, setSelected] = useState([])
+   const [loading, setLoading] = useState(false)
++  const [indexing, setIndexing] = useState(false)
++  const [reload, setReload] = useState(0)
+   const [error, setError] = useState('')
+   const [confirmReset, setConfirmReset] = useState(false)
++  const [posterChoice, setPosterChoice] = useState(false)
++  const [posterAction, setPosterAction] = useState('poster')
++  const [posterSource, setPosterSource] = useState('current')
+   const [busy, setBusy] = useState(false)
+   const [posterVersion, setPosterVersion] = useState(() => Date.now())
+   const [imdbJob, setImdbJob] = useState(null)
+ 
++  useEffect(() => {
++    if (!focusTarget?.library || !focusTarget?.key) return
++    setLibrary(focusTarget.library)
++    setParent(null)
++    setTrail([])
++    setSearch(focusTarget.title || '')
++    setSearchEpisodes(focusTarget.type === 'episode')
++    setPage(1)
++    setSelected([String(focusTarget.key)])
++  }, [focusTarget])
++
++  useEffect(() => {
++    const timer = setTimeout(() => { setQuery(search.trim()); setPage(1) }, 250)
++    return () => clearTimeout(timer)
++  }, [search])
++
+   useEffect(() => {
+     fetch('/api/imdb-sync/status').then(r => r.json()).then(data => {
+       if (data.library === library) setImdbJob(data)
+@@ -22,12 +47,11 @@ export default function LibraryBrowser({ onStartProcessing }) {
+   }, [library])
+ 
+   useEffect(() => {
+-    if (!imdbJob?.is_running) return
+     const timer = setInterval(() => fetch('/api/imdb-sync/status').then(r => r.json()).then(data => {
+       if (data.library === library) setImdbJob(data)
+     }).catch(() => {}), 1500)
+     return () => clearInterval(timer)
+-  }, [imdbJob?.is_running, library])
++  }, [library])
+ 
+   useEffect(() => {
+     if (imdbJob?.phase === 'Abgeschlossen' && !imdbJob.is_running && imdbJob.rendered > 0) {
+@@ -48,49 +72,62 @@ export default function LibraryBrowser({ onStartProcessing }) {
+     let active = true
+     setLoading(true)
+     setError('')
+-    const query = new URLSearchParams({ page: String(page) })
+-    if (parent) query.set('parent_key', parent.key)
+-    fetch(`/api/library/${encodeURIComponent(library)}/browse?${query}`)
++    const params = new URLSearchParams({ page: String(page) })
++    if (parent) params.set('parent_key', parent.key)
++    if (query) params.set('q', query)
++    if (searchEpisodes && !parent) params.set('episodes', 'true')
++    if (reload < 0) params.set('refresh', 'true')
++    fetch(`/api/library/${encodeURIComponent(library)}/browse?${params}`)
+       .then(async r => { const data = await r.json(); if (!r.ok) throw Error(data.detail || 'Library unavailable'); return data })
+-      .then(data => { if (active) { setItems(data.items); setTotal(data.total) } })
++      .then(data => { if (active) { setItems(data.items); setTotal(data.total); setIndexing(!!data.is_running); if (data.error) setError(data.error) } })
+       .catch(e => { if (active) setError(e.message) })
+       .finally(() => { if (active) setLoading(false) })
+     return () => { active = false }
+-  }, [library, parent, page])
++  }, [library, parent, page, query, searchEpisodes, reload])
+ 
+-  const switchLibrary = name => { setLibrary(name); setParent(null); setPage(1); setSelected([]); setImdbJob(null) }
+-  const openShow = item => { setParent(item); setPage(1); setSelected([]) }
++  useEffect(() => {
++    if (!indexing) return
++    const timer = setTimeout(() => setReload(value => value < 0 ? 0 : value + 1), 2500)
++    return () => clearTimeout(timer)
++  }, [indexing, reload])
++
++  const switchLibrary = name => { setLibrary(name); setParent(null); setTrail([]); setSearch(''); setSearchEpisodes(false); setPage(1); setSelected([]); setImdbJob(null) }
++  const openFolder = item => { setTrail(previous => [...previous, parent]); setParent(item); setSearch(''); setPage(1); setSelected([]) }
++  const goBack = () => { setParent(trail.at(-1) || null); setTrail(previous => previous.slice(0, -1)); setSearch(''); setPage(1); setSelected([]) }
+   const toggle = key => setSelected(previous => previous.includes(key) ? previous.filter(k => k !== key) : [...previous, key])
+   const allVisible = items.length > 0 && items.every(item => selected.includes(item.key))
+-  const launch = async reset => {
++  const launch = async (reset, source = null) => {
+     if (!selected.length || busy) return
+     setBusy(true)
+     setError('')
+     try {
+       const response = await fetch(reset ? '/api/restore' : '/api/process', {
+         method: 'POST', headers: { 'Content-Type': 'application/json' },
+-        body: JSON.stringify({ library_name: library, rating_keys: selected, force: true, reset_to_plex: reset }),
++        body: JSON.stringify({ library_name: library, rating_keys: selected, force: true,
++          reset_to_plex: reset, poster_source: reset ? null : source }),
+       })
+       const data = await response.json()
+       if (!response.ok || data.error || data.status !== 'started') throw Error(data.error || data.detail || 'Could not start')
+       setConfirmReset(false)
++      setPosterChoice(false)
+       onStartProcessing()
+     } catch (e) { setError(e.message) }
+     finally { setBusy(false) }
+   }
+ 
+-  const launchImdb = async mode => {
++  const launchImdb = async (mode, source = null) => {
+     if (!selected.length || busy || imdbJob?.is_running) return
+     setBusy(true)
+     setError('')
+     try {
+       const response = await fetch(`/api/library/${encodeURIComponent(library)}/selected-imdb`, {
+         method: 'POST', headers: { 'Content-Type': 'application/json' },
+-        body: JSON.stringify({ rating_keys: selected, mode }),
++        body: JSON.stringify({ rating_keys: selected, mode, poster_source: source }),
+       })
+       const data = await response.json()
+       if (!response.ok) throw Error(data.detail || 'IMDb-Lauf konnte nicht gestartet werden')
+-      setImdbJob({ is_running: true, phase: 'Lese Auswahl', library, logs: [] })
++      setImdbJob({ is_running: false, phase: `Aufgabe #${data.task_id} wartet`, library, logs: [] })
++      setPosterChoice(false)
+     } catch (e) { setError(e.message) }
+     finally { setBusy(false) }
+   }
+@@ -101,11 +138,20 @@ export default function LibraryBrowser({ onStartProcessing }) {
+       <p className="text-sm text-gray-400 mb-4">Eine Serie wählt ihr Hauptposter. Öffne sie, um einzelne Staffeln auszuwählen; eine Staffel bearbeitet ihre Episodenbilder.</p>
+       <div className="flex flex-wrap gap-2">{libraries.map(lib => <button key={lib.name} onClick={() => switchLibrary(lib.name)}
+         className={`px-3 py-2 rounded border ${library === lib.name ? 'bg-blue-700 border-blue-500' : 'bg-gray-900 border-gray-600 hover:border-gray-400'}`}>{lib.name}</button>)}</div>
+-      {parent && <button className="text-blue-300 mt-4 hover:underline" onClick={() => { setParent(null); setPage(1); setSelected([]) }}>← {library} / {parent.title}</button>}
++      {parent && <button className="text-blue-300 mt-4 hover:underline" onClick={goBack}>← {library} / {parent.title}</button>}
++      <div className="mt-4 flex flex-wrap gap-3 items-center">
++        <input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Titel, Serie, Staffel oder Jahr suchen…"
++          aria-label="Bibliothek durchsuchen" className="bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm flex-1 min-w-52" />
++        {!parent && libraries.find(lib => lib.name === library)?.type === 'show' && <label className="text-sm flex items-center gap-2">
++          <input type="checkbox" checked={searchEpisodes} onChange={e => { setSearchEpisodes(e.target.checked); setPage(1); setSelected([]) }} /> Episoden anzeigen
++        </label>}
++        <button type="button" onClick={() => setReload(-1)} disabled={indexing} className="bg-gray-700 rounded px-3 py-2 text-sm disabled:opacity-40">Mit Plex abgleichen</button>
++      </div>
++      {indexing && <p className="text-sm text-blue-300 mt-2">Bibliothek wird im Hintergrund indexiert…</p>}
+     </div>
+     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
+       <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
+-        <span>{loading ? 'Lade Einträge…' : `${total} ${parent ? 'Staffeln' : 'Einträge'}`}</span>
++        <span>{loading ? 'Lade Einträge…' : `${total} ${parent?.type === 'show' ? 'Staffeln' : parent?.type === 'season' || searchEpisodes ? 'Episoden' : 'Einträge'}`}</span>
+         <button disabled={!items.length} onClick={() => setSelected(previous => allVisible ? previous.filter(k => !items.some(item => item.key === k)) : [...new Set([...previous, ...items.map(item => item.key)])])}
+           className="text-sm text-blue-300 disabled:text-gray-600">{allVisible ? 'Sichtbare abwählen' : 'Sichtbare auswählen'}</button>
+       </div>
+@@ -115,22 +161,23 @@ export default function LibraryBrowser({ onStartProcessing }) {
+           <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${encodeURIComponent(item.key)}?v=${posterVersion}`} alt="" className="absolute inset-0 w-full h-full object-cover" onError={event => { event.currentTarget.style.display = 'none' }} />
+           <span className={`absolute top-2 right-2 rounded px-2 py-1 text-sm ${selected.includes(item.key) ? 'bg-blue-600 text-white' : 'bg-gray-900/90 text-gray-200'}`}>{selected.includes(item.key) ? '✓' : '○'}</span>
+         </button>
+-        <div className="p-2.5"><div className="text-sm truncate" title={item.title}>{item.type === 'season' ? `Staffel ${item.index ?? '–'} · ` : ''}{item.title} {item.year ? `(${item.year})` : ''}</div>
+-        {item.type === 'show' && <button className="text-blue-300 text-xs mt-1" onClick={() => openShow(item)}>Staffeln anzeigen →</button>}</div>
++        <div className="p-2.5"><div className="text-sm truncate" title={item.title}>{item.type === 'season' ? `Staffel ${item.index ?? '–'} · ` : item.type === 'episode' ? `${item.series ? `${item.series} · ` : ''}S${String(item.season ?? 0).padStart(2, '0')}E${String(item.index ?? 0).padStart(2, '0')} · ` : ''}{item.title} {item.year ? `(${item.year})` : ''}</div>
++        {['show', 'season'].includes(item.type) && <button className="text-blue-300 text-xs mt-1" onClick={() => openFolder(item)}>{item.type === 'show' ? 'Staffeln anzeigen' : 'Episoden anzeigen'} →</button>}</div>
+       </div>)}</div>
+       {total > 60 && <div className="flex items-center gap-4 mt-5"><button disabled={page === 1} onClick={() => setPage(page - 1)}>← Zurück</button><span>Seite {page} / {Math.ceil(total / 60)}</span><button disabled={page * 60 >= total} onClick={() => setPage(page + 1)}>Weiter →</button></div>}
+     </div>
+     {error && <p role="alert" className="text-red-300">{error}</p>}
+     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 flex flex-wrap items-center gap-3">
+       <span className="text-sm mr-auto">{selected.length} ausgewählt</span>
+-      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launch(false)} className="px-4 py-2 rounded bg-blue-600 disabled:opacity-40">Nur Poster erneuern</button>
++      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => { setPosterAction('poster'); setPosterChoice(true) }} className="px-4 py-2 rounded bg-blue-600 disabled:opacity-40">Nur Overlay erneuern</button>
+       <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launchImdb('ratings')} className="px-4 py-2 rounded bg-violet-700 disabled:opacity-40">Nur IMDb-Wertungen aktualisieren</button>
+-      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launchImdb('both')} className="px-4 py-2 rounded bg-emerald-700 disabled:opacity-40">Poster und IMDb-Wertungen</button>
+-      <button disabled={!selected.length || busy} onClick={() => setConfirmReset(true)} className="px-4 py-2 rounded bg-orange-700 disabled:opacity-40">Plex-Poster zurücksetzen</button>
++      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => { setPosterAction('imdb'); setPosterChoice(true) }} className="px-4 py-2 rounded bg-emerald-700 disabled:opacity-40">Poster und IMDb-Wertungen</button>
++      <button disabled={!selected.length || busy} onClick={() => setConfirmReset(true)} className="px-4 py-2 rounded bg-orange-700 disabled:opacity-40">Plex-Poster und Backup zurücksetzen</button>
+     </div>
+     {imdbJob && <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-3">
+       <h3 className="font-semibold">IMDb-Protokoll · {imdbJob.phase}</h3>
+       <p className="text-xs text-gray-400">{imdbJob.scanned || 0} Einträge · {imdbJob.matched || 0} IMDb-Titel · {imdbJob.changed || 0} geänderte Werte · {imdbJob.rendered || 0} Poster gerendert</p>
++      {imdbJob.is_running && <div role="progressbar" aria-valuenow={imdbJob.percent || 0} aria-valuemin="0" aria-valuemax="100" className="bg-gray-900 rounded h-4 overflow-hidden"><div className="bg-blue-600 h-full" style={{ width: `${imdbJob.percent || 0}%` }} /></div>}
+       {imdbJob.error && <p role="alert" className="text-red-300 text-sm">{imdbJob.error}</p>}
+       <div className="max-h-80 overflow-auto space-y-1 text-sm" role="log">{(imdbJob.logs || []).map(row => <div key={row.key} className="flex flex-wrap gap-x-3 gap-y-1 border-b border-gray-700 py-1">
+         <span className="flex-1 min-w-44">{row.type === 'episode' ? 'Episode · ' : row.type === 'show' ? 'Serie · ' : 'Film · '}{row.title}</span>

@@ -20,12 +20,18 @@ class ImdbRatingCache:
         self.dataset_path = self.path.with_suffix('.tsv.gz')
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        self.db.execute('PRAGMA journal_mode=WAL')
+        self.db.execute('PRAGMA busy_timeout=30000')
+        self.db.execute('PRAGMA synchronous=NORMAL')
+        self.db.execute('PRAGMA temp_store=MEMORY')
+        self.db.execute('PRAGMA cache_size=-32000')
         self.db.execute('CREATE TABLE IF NOT EXISTS ratings (imdb_id TEXT PRIMARY KEY, rating REAL NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS applied (library TEXT NOT NULL, rating_key TEXT NOT NULL, imdb_id TEXT NOT NULL, rating REAL NOT NULL, PRIMARY KEY (library, rating_key))')
         self.db.execute('CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)')
         self.db.commit()
 
     def close(self):
+        self.db.execute('PRAGMA optimize')
         self.db.close()
 
     def ratings(self, ids):

@@ -432,6 +432,7 @@ async def restore_library_background(request: ProcessRequest):
         restore_state["failed"] = 0
         restore_state["skipped"] = 0
         restore_state["current_item"] = None
+        restore_state['current_rating_key'] = None
         restore_start_time = datetime.now()
 
         from plexapi.server import PlexServer
