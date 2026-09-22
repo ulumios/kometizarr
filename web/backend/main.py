@@ -1313,7 +1313,7 @@ async def _task_worker():
 async def _run_conflict_scan(library_name):
     state = _conflict_scans[library_name]
     try:
-        state['items'] = await asyncio.to_thread(_scan_kometa_conflicts, library_name)
+        state['items'] = await asyncio.to_thread(_scan_kometa_conflicts, library_name, state)
         from src.rating_overlay.media_index import MediaIndex
         def save():
             index = MediaIndex()
@@ -1329,11 +1329,14 @@ async def _run_conflict_scan(library_name):
         state['error'] = str(exc)
         state['updated_at'] = time.time()
     finally:
+        if not state['error']:
+            state.update(phase='Abgeschlossen', percent=100)
         state['is_running'] = False
 
 
-def _scan_kometa_conflicts(library_name):
+def _scan_kometa_conflicts(library_name, progress=None):
     from plexapi.server import PlexServer
+    from plexapi.exceptions import NotFound
     from src.rating_overlay.backup_manager import PosterBackupManager
     from src.rating_overlay.kometa_conflicts import ManualPosterQueue, has_overlay_label, has_kometizarr_overlay
     from src.rating_overlay.media_index import MediaIndex
@@ -1343,42 +1346,73 @@ def _scan_kometa_conflicts(library_name):
         raise ValueError('Only movie and series libraries are supported')
     backups = PosterBackupManager(backup_dir='/backups')
     queue = ManualPosterQueue()
+    pending_keys = set(queue.keys(library_name))
     found = {}
-    for kind in (('movie',) if library.type == 'movie' else ('show', 'episode')):
+    kinds = ('movie',) if library.type == 'movie' else ('show', 'episode')
+    for position, kind in enumerate(kinds):
+        if progress is not None:
+            progress.update(phase=f'Suche {"Filme" if kind == "movie" else "Serien" if kind == "show" else "Episoden"}',
+                            percent=int(50 * position / len(kinds)))
         try:
             items = library.search(libtype=kind, label='Overlay')
         except Exception as exc:
             raise RuntimeError(f'Plex-Labelsuche für {kind} fehlgeschlagen: {exc}') from exc
         for item in items:
-            if has_overlay_label(item):
-                found[str(item.ratingKey)] = item
-    for key in queue.keys(library_name):
+            try:
+                if has_overlay_label(item):
+                    found[str(item.ratingKey)] = item
+            except NotFound:
+                if progress is not None:
+                    progress['skipped'] += 1
+                logger.info('Plex item disappeared during conflict scan: %s', item.ratingKey)
+        if progress is not None:
+            progress['percent'] = int(50 * (position + 1) / len(kinds))
+    for key in pending_keys:
         if key not in found:
             try:
                 found[key] = library.fetchItem(int(key))
+            except NotFound:
+                queue.remove(library_name, type('RemovedItem', (), {'ratingKey': key})())
+                if progress is not None:
+                    progress['skipped'] += 1
+                continue
             except Exception:
+                logger.exception('Could not fetch pending Plex item %s', key)
                 continue
     output = []
     index = MediaIndex()
     try:
+        if progress is not None:
+            progress.update(phase='Prüfe gefundene Einträge', total=len(found), processed=0)
         for item in found.values():
-            manual_state = queue.state(library_name, item)
-            pending = manual_state != 'none'
-            label = has_overlay_label(item)
-            if not label and not pending:
-                continue
-            thumb = getattr(item, 'thumb', None)
-            if thumb and index.has_item(library_name, item.ratingKey) and thumb != index.thumb(library_name, item.ratingKey):
-                index.update_thumb(library_name, item.ratingKey, thumb)
-                _browse_image_cache.pop((library_name, str(item.ratingKey)), None)
-            output.append({'key': str(item.ratingKey), 'title': item.title,
-                           'type': item.type, 'year': getattr(item, 'year', None),
-                           'series': getattr(item, 'grandparentTitle', None),
-                           'season': getattr(item, 'parentIndex', None),
-                           'episode': getattr(item, 'index', None),
-                           'pending_manual': manual_state == 'waiting', 'manual_ready': manual_state == 'changed',
-                           'has_label': label,
-                           'has_kometizarr_overlay': has_kometizarr_overlay(backups, library_name, item)})
+            try:
+                manual_state = queue.state(library_name, item)
+                pending = manual_state != 'none'
+                label = has_overlay_label(item)
+                if not label and not pending:
+                    continue
+                thumb = getattr(item, 'thumb', None)
+                if thumb and index.has_item(library_name, item.ratingKey) and thumb != index.thumb(library_name, item.ratingKey):
+                    index.update_thumb(library_name, item.ratingKey, thumb)
+                    _browse_image_cache.pop((library_name, str(item.ratingKey)), None)
+                output.append({'key': str(item.ratingKey), 'title': item.title,
+                               'type': item.type, 'year': getattr(item, 'year', None),
+                               'series': getattr(item, 'grandparentTitle', None),
+                               'season': getattr(item, 'parentIndex', None),
+                               'episode': getattr(item, 'index', None),
+                               'pending_manual': manual_state == 'waiting', 'manual_ready': manual_state == 'changed',
+                               'has_label': label,
+                               'has_kometizarr_overlay': has_kometizarr_overlay(backups, library_name, item)})
+            except NotFound:
+                if str(item.ratingKey) in pending_keys:
+                    queue.remove(library_name, item)
+                if progress is not None:
+                    progress['skipped'] += 1
+                logger.info('Plex item disappeared during conflict details: %s', item.ratingKey)
+            finally:
+                if progress is not None:
+                    progress['processed'] += 1
+                    progress['percent'] = min(99, 50 + int(49 * progress['processed'] / max(1, progress['total'])))
     finally:
         index.close()
     return sorted(output, key=lambda entry: (entry['series'] or entry['title'], entry['season'] or 0, entry['episode'] or 0))
@@ -1396,13 +1430,19 @@ async def get_kometa_conflicts(library_name: str, refresh: bool = False):
             finally:
                 index.close()
         updated_at, items = await asyncio.to_thread(load)
-        state = {'is_running': False, 'items': items or [], 'error': None, 'updated_at': updated_at}
+        state = {'is_running': False, 'items': items or [], 'error': None, 'updated_at': updated_at,
+                 'phase': 'Bereit', 'percent': 0, 'processed': 0, 'total': 0, 'skipped': 0}
         _conflict_scans[library_name] = state
+    for name, default in (('phase', 'Bereit'), ('percent', 0), ('processed', 0), ('total', 0), ('skipped', 0)):
+        state.setdefault(name, default)
     if not state['is_running'] and (refresh or time.time() - state['updated_at'] > 600) and (refresh or not state['error']):
         state['is_running'] = True
         state['error'] = None
+        state.update(phase='Verbinde mit Plex', percent=0, processed=0, total=0, skipped=0)
         asyncio.create_task(_run_conflict_scan(library_name))
-    return {'items': state['items'], 'is_running': state['is_running'], 'error': state['error']}
+    return {'items': state['items'], 'is_running': state['is_running'], 'error': state['error'],
+            'phase': state['phase'], 'percent': state['percent'], 'processed': state['processed'],
+            'total': state['total'], 'skipped': state['skipped']}
 
 
 @app.get('/api/kometa/conflicts/status')

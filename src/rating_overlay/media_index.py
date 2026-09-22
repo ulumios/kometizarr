@@ -1,9 +1,14 @@
 """Persistent read index for Plex library browsing and conflict snapshots."""
 
 import json
+import logging
 import sqlite3
 import time
 from pathlib import Path
+
+from plexapi.exceptions import NotFound
+
+logger = logging.getLogger(__name__)
 
 
 class MediaIndex:
@@ -38,12 +43,16 @@ class MediaIndex:
                             (library, name, time.time(), json.dumps(payload) if payload is not None else None))
 
     def replace_library(self, library, items):
-        rows = [(library, str(item.ratingKey), item.title, item.type,
-                 str(getattr(item, 'parentRatingKey', '') or '') or None,
-                 getattr(item, 'year', None), getattr(item, 'index', None),
-                 getattr(item, 'grandparentTitle', None), getattr(item, 'parentIndex', None),
-                 getattr(item, 'thumb', None))
-                for item in items]
+        rows = []
+        for item in items:
+            try:
+                rows.append((library, str(item.ratingKey), item.title, item.type,
+                             str(getattr(item, 'parentRatingKey', '') or '') or None,
+                             getattr(item, 'year', None), getattr(item, 'index', None),
+                             getattr(item, 'grandparentTitle', None), getattr(item, 'parentIndex', None),
+                             getattr(item, 'thumb', None)))
+            except NotFound:
+                logger.info('Plex item disappeared while indexing %s: %s', library, item.ratingKey)
         with self.db:
             self.db.execute('DELETE FROM media WHERE library=?', (library,))
             self.db.executemany('INSERT INTO media VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', rows)

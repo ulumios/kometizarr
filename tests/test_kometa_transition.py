@@ -67,6 +67,24 @@ class KometaTransitionTest(unittest.TestCase):
             self.assertEqual(index.browse('Shows', parent_key=1)['items'][0]['type'], 'season')
             index.close()
 
+    def test_index_skips_deleted_plex_item(self):
+        from plexapi.exceptions import NotFound
+        from src.rating_overlay.media_index import MediaIndex
+
+        class Deleted:
+            ratingKey = 180524
+
+            @property
+            def title(self):
+                raise NotFound('(404) not_found')
+
+        with tempfile.TemporaryDirectory() as folder:
+            index = MediaIndex(Path(folder) / 'index.sqlite3')
+            index.replace_library('Shows', [Deleted(), SimpleNamespace(
+                ratingKey=42, title='Alive', type='show')])
+            self.assertEqual(index.browse('Shows')['total'], 1)
+            index.close()
+
     def test_cache_only_imdb_run_does_not_render(self):
         class Cache:
             def ratings(self, _ids):
@@ -111,6 +129,37 @@ class KometaTransitionTest(unittest.TestCase):
                 main._conflict_scans.pop('Shows', None)
             else:
                 main._conflict_scans['Shows'] = old
+
+    def test_conflict_scan_skips_deleted_plex_episode(self):
+        from plexapi.exceptions import NotFound
+        from src.rating_overlay.media_index import MediaIndex
+
+        class Deleted:
+            ratingKey = 180524
+
+            @property
+            def labels(self):
+                raise NotFound('(404) not_found')
+
+        valid = SimpleNamespace(ratingKey=42, title='Pilot', type='episode',
+                                labels=[SimpleNamespace(tag='Overlay')], grandparentTitle='Show',
+                                parentIndex=1, index=1)
+        library = SimpleNamespace(type='show', search=lambda libtype, label: [Deleted(), valid]
+                                  if libtype == 'episode' else [], fetchItem=Mock())
+        server = SimpleNamespace(library=SimpleNamespace(section=lambda _: library))
+        with tempfile.TemporaryDirectory() as folder, \
+             patch('plexapi.server.PlexServer', return_value=server), \
+             patch('src.rating_overlay.kometa_conflicts.ManualPosterQueue') as queue, \
+             patch('src.rating_overlay.media_index.MediaIndex', side_effect=lambda: MediaIndex(Path(folder) / 'index.sqlite3')), \
+             patch('src.rating_overlay.backup_manager.PosterBackupManager') as backups:
+            queue.return_value.keys.return_value = []
+            queue.return_value.state.return_value = 'none'
+            backups.return_value.backup_dir = Path(folder)
+            progress = {'skipped': 0}
+            result = main._scan_kometa_conflicts('Shows', progress)
+        self.assertEqual([entry['key'] for entry in result], ['42'])
+        self.assertEqual(progress['skipped'], 1)
+        self.assertEqual(progress['processed'], 1)
 
 
 if __name__ == '__main__':

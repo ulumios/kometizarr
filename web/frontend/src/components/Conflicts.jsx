@@ -12,6 +12,7 @@ export default function Conflicts() {
   const [confirm, setConfirm] = useState(null)
   const [posterVersion, setPosterVersion] = useState(() => Date.now())
   const [scanning, setScanning] = useState(false)
+  const [scanProgress, setScanProgress] = useState({ phase: '', percent: 0, processed: 0, total: 0, skipped: 0 })
 
   useEffect(() => {
     fetch('/api/libraries').then(r => r.json()).then(data => {
@@ -32,6 +33,8 @@ export default function Conflicts() {
       try { data = JSON.parse(body) } catch { throw Error(`Serverantwort ${response.status} statt JSON. Bitte Backend-Logs prüfen.`) }
       if (!response.ok || data.error) throw Error(data.detail || data.error || 'Konflikte konnten nicht geladen werden')
       setScanning(!!data.is_running)
+      setScanProgress({ phase: data.phase || '', percent: data.percent || 0,
+        processed: data.processed || 0, total: data.total || 0, skipped: data.skipped || 0 })
       setItems(data.items || [])
       if (!polling) { setSelected([]); setPosterVersion(Date.now()) }
     } catch (e) { setScanning(false); setError(e.message) }
@@ -93,6 +96,10 @@ export default function Conflicts() {
       <div className="flex gap-3"><input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Konflikte durchsuchen…"
         aria-label="Konflikte durchsuchen" className="bg-gray-900 border border-gray-600 rounded px-3 py-2 flex-1 text-sm" />
         <button onClick={() => refresh(library, true)} disabled={loading || scanning || status?.is_running} className="bg-gray-700 rounded px-3 py-2 text-sm">Aktualisieren</button></div>
+      {scanning && <div className="space-y-1" role="progressbar" aria-valuenow={scanProgress.percent} aria-valuemin="0" aria-valuemax="100" aria-label="Konflikte durchsuchen">
+        <div className="text-xs text-blue-200">{scanProgress.phase} · {scanProgress.percent}%{scanProgress.total ? ` · ${scanProgress.processed}/${scanProgress.total} geprüft` : ''}{scanProgress.skipped ? ` · ${scanProgress.skipped} nicht mehr in Plex` : ''}</div>
+        <div className="h-2 rounded bg-gray-700 overflow-hidden"><div className="h-full bg-blue-500 transition-all" style={{ width: `${scanProgress.percent}%` }} /></div>
+      </div>}
     </div>
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
       <div className="flex justify-between mb-4 text-sm"><span>{scanning ? 'Plex wird im Hintergrund geprüft…' : loading ? 'Lade…' : `${visible.length} von ${items.length} Konflikten`}</span>
