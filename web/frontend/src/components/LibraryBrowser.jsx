@@ -169,19 +169,9 @@ export default function LibraryBrowser({ onStartProcessing }) {
         {row.render && <span className="text-blue-300">Poster: {row.render}</span>}
       </div>)}</div>
     </div>}
-    {posterChoice && <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"><div className="bg-gray-800 border border-gray-600 rounded-xl p-6 max-w-lg w-full space-y-4">
-      <h3 className="text-lg font-semibold">Bild für {selected.length} Einträge wählen</h3>
-      <label className="flex gap-3 text-sm"><input type="radio" name="posterSource" checked={posterSource === 'current'} onChange={() => setPosterSource('current')} />
-        <span><strong>Aktuelles Plex-Poster</strong><br />Das derzeit in Plex ausgewählte Bild als neue Vorlage sichern und das Overlay darauf rendern.</span></label>
-      <label className="flex gap-3 text-sm"><input type="radio" name="posterSource" checked={posterSource === 'backup'} onChange={() => setPosterSource('backup')} />
-        <span><strong>Gespeichertes Original</strong><br />Das bestehende Backup für das neue Overlay verwenden.</span></label>
-      <p className="text-xs text-amber-200">Bei Kometa-„Overlay“-Label wird „Aktuelles Plex-Poster“ übersprungen. Wähle dafür zuerst im Reiter „Konflikte“ ein sauberes Poster. Ältere Backups bleiben beim Wechsel als „previous“-Dateien erhalten.</p>
-      <div className="flex gap-3"><button className="px-4 py-2 bg-gray-700 rounded" onClick={() => setPosterChoice(false)}>Abbrechen</button>
-        <button disabled={busy} className="px-4 py-2 bg-blue-600 rounded disabled:opacity-40" onClick={() => posterAction === 'imdb' ? launchImdb('both', posterSource) : launch(false, posterSource)}>Overlay starten</button></div>
-    </div></div>}
     {confirmReset && <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"><div className="bg-gray-800 border border-gray-600 rounded-xl p-6 max-w-md space-y-4">
       <h3 className="text-lg font-semibold">Plex-Poster zurücksetzen?</h3>
-      <p className="text-sm text-gray-300">Für die Auswahl wird das erste verfügbare Poster ohne Upload aus Plex gewählt. Das zugehörige Overlay- und Original-Backup wird gelöscht. Einträge ohne solches Poster werden übersprungen.</p>
+      <p className="text-sm text-gray-300">Für die Auswahl wird das erste verfügbare Poster ohne Upload aus Plex gewählt. Einträge ohne solches Poster werden übersprungen.</p>
       <div className="flex gap-3"><button onClick={() => setConfirmReset(false)} className="px-4 py-2 bg-gray-700 rounded">Abbrechen</button><button disabled={busy} onClick={() => launch(true)} className="px-4 py-2 bg-orange-700 rounded">{selected.length} Einträge zurücksetzen</button></div>
     </div></div>}
   </section>
