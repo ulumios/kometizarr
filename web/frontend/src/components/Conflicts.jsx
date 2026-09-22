@@ -48,9 +48,19 @@ export default function Conflicts() {
 
   useEffect(() => {
     if (!status?.is_running) return
-    const timer = setInterval(() => fetch('/api/kometa/conflicts/status').then(r => r.json()).then(setStatus).catch(() => {}), 1500)
+    const timer = setInterval(async () => {
+      try {
+        if (status.task_id) {
+          const queue = await fetch('/api/tasks').then(r => r.json())
+          const task = queue.tasks?.find(row => row.id === status.task_id)
+          if (task?.status === 'queued') return
+        }
+        const current = await fetch('/api/kometa/conflicts/status').then(r => r.json())
+        setStatus({ ...current, task_id: status.task_id })
+      } catch (_) { /* Try again after the next interval. */ }
+    }, 1500)
     return () => clearInterval(timer)
-  }, [status?.is_running])
+  }, [status?.is_running, status?.task_id])
 
   useEffect(() => {
     if (status?.phase === 'Abgeschlossen' && !status.is_running) refresh(library, true)
@@ -69,7 +79,7 @@ export default function Conflicts() {
       })
       const data = await response.json()
       if (!response.ok) throw Error(data.detail || 'Aktion konnte nicht gestartet werden')
-      setStatus({ is_running: true, phase: 'Startet…', total: selected.length, resolved: 0, skipped: 0, failed: 0 })
+      setStatus({ is_running: true, phase: `Aufgabe #${data.task_id} wartet`, task_id: data.task_id, total: selected.length, resolved: 0, skipped: 0, failed: 0 })
     } catch (e) { setError(e.message) }
   }
 

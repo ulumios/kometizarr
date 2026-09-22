@@ -30,13 +30,84 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Kometizarr API", version="1.2.3")
 
-# Short-lived browser cache; Plex posters can change after a render or restore.
-_browse_entries_cache = {}
+# Short-lived image cache; browser entries live in persistent SQLite.
 _browse_image_cache = {}
+_library_index_scans = {}
+
+
+def _read_library_index(library_name, parent_key, episodes, q, page, page_size):
+    from src.rating_overlay.media_index import MediaIndex
+    index = MediaIndex()
+    try:
+        updated_at, _ = index.snapshot(library_name, 'browse')
+        result = index.browse(library_name, parent_key, episodes, q, page, page_size) if updated_at else {
+            'total': 0, 'page': page, 'items': []}
+        return updated_at, result
+    finally:
+        index.close()
+
+
+def _refresh_library_index(library_name):
+    from plexapi.server import PlexServer
+    from src.rating_overlay.media_index import MediaIndex
+    library = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN')).library.section(library_name)
+    if library.type not in ('movie', 'show'):
+        raise ValueError('Only movie and show libraries are supported')
+    items = list(library.all())
+    if library.type == 'show':
+        items.extend(library.all(libtype='season'))
+        items.extend(library.all(libtype='episode'))
+    index = MediaIndex()
+    try:
+        index.replace_library(library_name, items)
+    finally:
+        index.close()
+
+
+def _index_new_item(library_name, item):
+    """Update one newly added media item without rescanning its library."""
+    from src.rating_overlay.media_index import MediaIndex
+    index = MediaIndex()
+    try:
+        if not index.snapshot(library_name, 'browse')[0]:
+            return
+        ancestors = []
+        parent_key = getattr(item, 'parentRatingKey', None)
+        if parent_key and not index.has_item(library_name, parent_key):
+            parent = item.parent()
+            ancestors.append(parent)
+            grandparent_key = getattr(parent, 'parentRatingKey', None)
+            if grandparent_key and not index.has_item(library_name, grandparent_key):
+                ancestors.append(parent.parent())
+        for ancestor in reversed(ancestors):
+            index.upsert_item(library_name, ancestor)
+        index.upsert_item(library_name, item)
+    finally:
+        index.close()
+
+
+async def _run_library_index_scan(library_name):
+    try:
+        await asyncio.to_thread(_refresh_library_index, library_name)
+        _library_index_scans[library_name]['error'] = None
+    except Exception as exc:
+        logger.exception('Library index refresh failed for %s', library_name)
+        _library_index_scans[library_name]['error'] = str(exc)
+    finally:
+        _library_index_scans[library_name]['is_running'] = False
 
 
 def _invalidate_browse_poster(library, rating_key):
     _browse_image_cache.pop((library, str(rating_key)), None)
+    try:
+        from src.rating_overlay.media_index import MediaIndex
+        index = MediaIndex()
+        try:
+            index.update_thumb(library, rating_key, None)
+        finally:
+            index.close()
+    except Exception:
+        logger.exception('Could not invalidate indexed poster for %s', rating_key)
 
 # CORS middleware for frontend
 app.add_middleware(
@@ -66,9 +137,6 @@ processing_state = {
 
 # Processing start time (stored separately - not sent over WebSocket)
 processing_start_time = None
-
-# Webhook item queue — serializes single-item processing requests
-webhook_queue: asyncio.Queue = asyncio.Queue()
 
 # Restore state (sent over WebSocket - must be JSON serializable)
 restore_state = {
@@ -144,42 +212,17 @@ def _selected_items(library, keys):
 
 @app.get('/api/library/{library_name}/browse')
 async def browse_library(library_name: str, parent_key: Optional[int] = None, page: int = 1,
-                         page_size: int = 60, q: str = '', episodes: bool = False):
-    """Browse movies/shows or seasons of one show without loading all posters."""
+                         page_size: int = 60, q: str = '', episodes: bool = False, refresh: bool = False):
+    """Serve indexed Plex media; refresh asynchronously without blocking the UI."""
     try:
-        cache_key = (library_name, str(parent_key) if parent_key is not None else 'episodes' if episodes else '')
-        cached = _browse_entries_cache.get(cache_key)
-        if cached and cached[0] > time.monotonic():
-            entries = cached[1]
-        else:
-            from plexapi.server import PlexServer
-            server = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
-            library = server.library.section(library_name)
-            if library.type not in ('movie', 'show'):
-                raise HTTPException(400, 'Only movie and show libraries are supported')
-            if parent_key is not None:
-                parent = library.fetchItem(parent_key)
-                if parent.type not in ('show', 'season') or str(getattr(parent, 'librarySectionID', library.key)) != str(library.key):
-                    raise HTTPException(400, 'Invalid show or season for this library')
-                entries = parent.seasons() if parent.type == 'show' else parent.episodes()
-            else:
-                entries = library.all(libtype='episode') if episodes and library.type == 'show' else library.all()
-            entries = [{'key': str(item.ratingKey), 'title': item.title, 'type': item.type,
-                        'year': getattr(item, 'year', None), 'index': getattr(item, 'index', None),
-                        'series': getattr(item, 'grandparentTitle', None),
-                        'season': getattr(item, 'parentIndex', None)}
-                       for item in entries]
-            _browse_entries_cache[cache_key] = (time.monotonic() + 180, entries)
-        if q.strip():
-            needle = q.strip().casefold()
-            entries = [entry for entry in entries if needle in entry['title'].casefold() or
-                       needle in (entry.get('series') or '').casefold() or
-                       needle in str(entry.get('year') or '') or
-                       (entry['type'] == 'season' and needle in f"staffel {entry.get('index')}")]
-        page_size = max(1, min(page_size, 100))
-        page = max(1, page)
-        start = (page - 1) * page_size
-        return {'total': len(entries), 'page': page, 'items': entries[start:start + page_size]}
+        updated_at, result = await asyncio.to_thread(
+            _read_library_index, library_name, parent_key, episodes, q, page, page_size)
+        scan = _library_index_scans.setdefault(library_name, {'is_running': False, 'error': None})
+        if not scan['is_running'] and (refresh or not scan['error']) and (refresh or not updated_at or time.time() - updated_at > 21600):
+            scan['is_running'] = True
+            asyncio.create_task(_run_library_index_scan(library_name))
+        result.update(is_running=scan['is_running'], error=scan['error'], updated_at=updated_at)
+        return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -190,22 +233,41 @@ async def browse_library(library_name: str, parent_key: Optional[int] = None, pa
 async def browse_poster(library_name: str, rating_key: int):
     """Proxy a Plex poster without exposing the Plex token to the frontend."""
     from fastapi.responses import Response
-    from plexapi.server import PlexServer
     try:
         cache_key = (library_name, str(rating_key))
         cached = _browse_image_cache.get(cache_key)
         if cached and cached[0] > time.monotonic():
             return Response(cached[1], media_type=cached[2], headers={'Cache-Control': 'private, max-age=60'})
-        server = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
-        library = server.library.section(library_name)
-        item = library.fetchItem(rating_key)
-        if str(getattr(item, 'librarySectionID', library.key)) != str(library.key):
-            raise HTTPException(404, 'Poster not found')
-        thumb = getattr(item, 'thumb', None) or getattr(item, 'posterUrl', None)
+        from src.rating_overlay.media_index import MediaIndex
+        index = MediaIndex()
+        try:
+            thumb = index.thumb(library_name, rating_key)
+        finally:
+            index.close()
+        server = None
+        if not thumb or not thumb.startswith('/') or thumb.startswith('//'):
+            from plexapi.server import PlexServer
+            server = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
+            library = server.library.section(library_name)
+            item = library.fetchItem(rating_key)
+            if str(getattr(item, 'librarySectionID', library.key)) != str(library.key):
+                raise HTTPException(404, 'Poster not found')
+            thumb = getattr(item, 'thumb', None) or getattr(item, 'posterUrl', None)
+            index = MediaIndex()
+            try:
+                index.update_thumb(library_name, rating_key, thumb)
+            finally:
+                index.close()
         if not thumb:
             raise HTTPException(404, 'Poster not found')
-        poster_url = thumb if thumb.startswith(('http://', 'https://')) else server.url(thumb)
-        image = server._session.get(poster_url, headers={'X-Plex-Token': os.getenv('PLEX_TOKEN')}, timeout=20)
+        from urllib.parse import urljoin
+        poster_url = thumb if thumb.startswith(('http://', 'https://')) else (
+            server.url(thumb) if server is not None else urljoin(os.getenv('PLEX_URL').rstrip('/') + '/', thumb.lstrip('/')))
+        if server is None:
+            import requests
+            image = requests.get(poster_url, headers={'X-Plex-Token': os.getenv('PLEX_TOKEN')}, timeout=20)
+        else:
+            image = server._session.get(poster_url, headers={'X-Plex-Token': os.getenv('PLEX_TOKEN')}, timeout=20)
         image.raise_for_status()
         if not image.headers.get('Content-Type', '').startswith('image/'):
             raise HTTPException(502, 'Plex did not return an image')
@@ -299,8 +361,6 @@ async def start_processing(request: ProcessRequest):
     """Start overlay processing"""
     global processing_state
 
-    if processing_state["is_processing"] or restore_state["is_restoring"] or imdb_sync_state['is_running'] or conflict_state['is_running']:
-        return {"error": "Processing already in progress"}
 
     if request.rating_keys:
         settings = _load_settings()
@@ -310,35 +370,19 @@ async def start_processing(request: ProcessRequest):
         request.media_overlay = request.media_overlay or settings.get('media_overlay')
 
     # Start background task
-    asyncio.create_task(process_library_background(request))
+    job_id = await _enqueue_task('process', request.dict())
 
-    return {"status": "started", "library": request.library_name}
+    return {"status": "started", "library": request.library_name, "task_id": job_id}
 
 
 @app.post("/api/process-batch")
 async def start_processing_batch(request: ProcessBatchRequest):
     """Process multiple libraries sequentially."""
-    if processing_state["is_processing"] or imdb_sync_state['is_running'] or conflict_state['is_running']:
-        return {"error": "Processing already in progress"}
     if not request.library_names:
         return {"error": "No libraries specified"}
 
-    async def run_batch():
-        for lib_name in request.library_names:
-            single = ProcessRequest(
-                library_name=lib_name,
-                position=request.position,
-                badge_positions=request.badge_positions,
-                force=request.force,
-                rating_sources=request.rating_sources,
-                badge_style=request.badge_style,
-                media_overlay=request.media_overlay,
-                include_episodes=request.include_episodes,
-            )
-            await process_library_background(single)
-
-    asyncio.create_task(run_batch())
-    return {"status": "started", "libraries": request.library_names}
+    job_id = await _enqueue_task('batch', request.dict())
+    return {"status": "started", "libraries": request.library_names, "task_id": job_id}
 
 
 @app.post("/api/restore")
@@ -346,13 +390,8 @@ async def restore_originals(request: ProcessRequest):
     """Start restoring original posters from backups"""
     global restore_state
 
-    if restore_state["is_restoring"] or processing_state["is_processing"] or imdb_sync_state['is_running'] or conflict_state['is_running']:
-        return {"error": "Restore already in progress"}
-
-    # Start background task
-    asyncio.create_task(restore_library_background(request))
-
-    return {"status": "started", "library": request.library_name}
+    job_id = await _enqueue_task('restore', request.dict())
+    return {"status": "started", "library": request.library_name, "task_id": job_id}
 
 
 @app.post("/api/stop")
@@ -585,6 +624,12 @@ async def process_library_background(request: ProcessRequest):
                 all_items += manager.library.all(libtype='episode')
             if request.limit:
                 all_items = all_items[:request.limit]
+
+        if request.rating_key and all_items:
+            try:
+                await asyncio.to_thread(_index_new_item, request.library_name, all_items[0])
+            except Exception:
+                logger.exception('Could not update library index for %s', request.rating_key)
 
         processing_state["total"] = len(all_items)
         if request.record_results:
@@ -1180,16 +1225,109 @@ conflict_state = {'is_running': False, 'phase': 'idle', 'total': 0, 'resolved': 
 _conflict_scans = {}
 
 
+def _with_tasks(action, *args):
+    from src.rating_overlay.task_queue import TaskQueue
+    queue = TaskQueue()
+    try:
+        return getattr(queue, action)(*args)
+    finally:
+        queue.close()
+
+
+async def _enqueue_task(kind, payload):
+    return await asyncio.to_thread(_with_tasks, 'add', kind, payload)
+
+
+@app.get('/api/tasks')
+async def list_tasks():
+    return {'tasks': await asyncio.to_thread(_with_tasks, 'list')}
+
+
+async def _task_worker():
+    await asyncio.to_thread(_with_tasks, 'resume')
+    while True:
+        try:
+            if any((processing_state['is_processing'], restore_state['is_restoring'],
+                    imdb_sync_state['is_running'], conflict_state['is_running'])):
+                await asyncio.sleep(2)
+                continue
+            task = await asyncio.to_thread(_with_tasks, 'claim')
+            if task is None:
+                await asyncio.sleep(2)
+                continue
+            error = None
+            try:
+                kind, payload = task['kind'], task['payload']
+                if kind == 'process':
+                    await process_library_background(ProcessRequest(**payload))
+                    error = processing_state.get('error')
+                elif kind == 'batch':
+                    for name in payload['library_names']:
+                        options = {key: value for key, value in payload.items() if key != 'library_names'}
+                        await process_library_background(ProcessRequest(library_name=name, **options))
+                        if processing_state.get('error'):
+                            error = f"{name}: {processing_state['error']}"
+                            break
+                elif kind == 'restore':
+                    await restore_library_background(ProcessRequest(**payload))
+                    error = restore_state.get('error')
+                elif kind == 'imdb':
+                    imdb_sync_state.update(is_running=True, phase='Lese Plex', scanned=0,
+                                           matched=0, changed=0, pending=0, rendered=0,
+                                           failed=0, error=None, logs=[], percent=0)
+                    await _run_imdb_sync(payload['mode'])
+                    error = imdb_sync_state.get('error')
+                elif kind == 'selected_imdb':
+                    imdb_sync_state.update(is_running=True, library=payload['library'], phase='Lese Auswahl',
+                                           scanned=0, matched=0, changed=0, rendered=0,
+                                           failed=0, error=None, logs=[], percent=0)
+                    await _run_selected_imdb(payload['library'], SelectedImdbRequest(**payload['request']))
+                    error = imdb_sync_state.get('error')
+                elif kind == 'conflict':
+                    conflict_state.update(is_running=True, phase='Startet', total=len(payload['rating_keys']),
+                                          resolved=0, skipped=0, failed=0, error=None, results={})
+                    await _run_kometa_action(ConflictAction(**payload))
+                    error = conflict_state.get('error')
+                elif kind == 'webhook':
+                    settings = _load_settings()
+                    webhook = settings.get('webhook', {})
+                    if webhook.get('enabled') and (not webhook.get('libraries') or payload['library'] in webhook['libraries']):
+                        await process_library_background(ProcessRequest(
+                            library_name=payload['library'], rating_key=payload['key'],
+                            badge_style=settings.get('badge_style'), badge_positions=settings.get('badge_positions'),
+                            rating_sources=settings.get('rating_sources'), media_overlay=settings.get('media_overlay')))
+                        error = processing_state.get('error')
+                else:
+                    error = f'Unbekannter Auftrag: {kind}'
+            except Exception as exc:
+                error = str(exc)
+                logger.exception('Task %s failed', task['id'])
+            await asyncio.to_thread(_with_tasks, 'finish', task['id'], error)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception('Task worker error')
+            await asyncio.sleep(3)
+
+
 async def _run_conflict_scan(library_name):
     state = _conflict_scans[library_name]
     try:
         state['items'] = await asyncio.to_thread(_scan_kometa_conflicts, library_name)
-        state['updated_at'] = time.monotonic()
+        from src.rating_overlay.media_index import MediaIndex
+        def save():
+            index = MediaIndex()
+            try:
+                index.save_snapshot(library_name, 'conflicts', state['items'])
+            finally:
+                index.close()
+        await asyncio.to_thread(save)
+        state['updated_at'] = time.time()
         state['error'] = None
     except Exception as exc:
         logger.exception('Conflict scan failed for %s', library_name)
         state['error'] = str(exc)
-        state['updated_at'] = time.monotonic()
+        state['updated_at'] = time.time()
     finally:
         state['is_running'] = False
 
@@ -1198,6 +1336,7 @@ def _scan_kometa_conflicts(library_name):
     from plexapi.server import PlexServer
     from src.rating_overlay.backup_manager import PosterBackupManager
     from src.rating_overlay.kometa_conflicts import ManualPosterQueue, has_overlay_label, has_kometizarr_overlay
+    from src.rating_overlay.media_index import MediaIndex
     server = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
     library = server.library.section(library_name)
     if library.type not in ('movie', 'show'):
@@ -1220,20 +1359,28 @@ def _scan_kometa_conflicts(library_name):
             except Exception:
                 continue
     output = []
-    for item in found.values():
-        manual_state = queue.state(library_name, item)
-        pending = manual_state != 'none'
-        label = has_overlay_label(item)
-        if not label and not pending:
-            continue
-        output.append({'key': str(item.ratingKey), 'title': item.title,
-                       'type': item.type, 'year': getattr(item, 'year', None),
-                       'series': getattr(item, 'grandparentTitle', None),
-                       'season': getattr(item, 'parentIndex', None),
-                       'episode': getattr(item, 'index', None),
-                       'pending_manual': manual_state == 'waiting', 'manual_ready': manual_state == 'changed',
-                       'has_label': label,
-                       'has_kometizarr_overlay': has_kometizarr_overlay(backups, library_name, item)})
+    index = MediaIndex()
+    try:
+        for item in found.values():
+            manual_state = queue.state(library_name, item)
+            pending = manual_state != 'none'
+            label = has_overlay_label(item)
+            if not label and not pending:
+                continue
+            thumb = getattr(item, 'thumb', None)
+            if thumb and index.has_item(library_name, item.ratingKey) and thumb != index.thumb(library_name, item.ratingKey):
+                index.update_thumb(library_name, item.ratingKey, thumb)
+                _browse_image_cache.pop((library_name, str(item.ratingKey)), None)
+            output.append({'key': str(item.ratingKey), 'title': item.title,
+                           'type': item.type, 'year': getattr(item, 'year', None),
+                           'series': getattr(item, 'grandparentTitle', None),
+                           'season': getattr(item, 'parentIndex', None),
+                           'episode': getattr(item, 'index', None),
+                           'pending_manual': manual_state == 'waiting', 'manual_ready': manual_state == 'changed',
+                           'has_label': label,
+                           'has_kometizarr_overlay': has_kometizarr_overlay(backups, library_name, item)})
+    finally:
+        index.close()
     return sorted(output, key=lambda entry: (entry['series'] or entry['title'], entry['season'] or 0, entry['episode'] or 0))
 
 
@@ -1241,9 +1388,17 @@ def _scan_kometa_conflicts(library_name):
 async def get_kometa_conflicts(library_name: str, refresh: bool = False):
     state = _conflict_scans.get(library_name)
     if state is None:
-        state = {'is_running': False, 'items': [], 'error': None, 'updated_at': 0}
+        from src.rating_overlay.media_index import MediaIndex
+        def load():
+            index = MediaIndex()
+            try:
+                return index.snapshot(library_name, 'conflicts')
+            finally:
+                index.close()
+        updated_at, items = await asyncio.to_thread(load)
+        state = {'is_running': False, 'items': items or [], 'error': None, 'updated_at': updated_at}
         _conflict_scans[library_name] = state
-    if not state['is_running'] and (refresh or time.monotonic() - state['updated_at'] > 600):
+    if not state['is_running'] and (refresh or time.time() - state['updated_at'] > 600) and (refresh or not state['error']):
         state['is_running'] = True
         state['error'] = None
         asyncio.create_task(_run_conflict_scan(library_name))
@@ -1265,12 +1420,8 @@ class ConflictAction(BaseModel):
 async def act_on_kometa_conflicts(request: ConflictAction):
     if request.action not in ('reset_render', 'remove_label') or not 0 < len(request.rating_keys) <= 250:
         raise HTTPException(400, 'Select 1–250 items and a supported action')
-    if conflict_state['is_running'] or processing_state['is_processing'] or imdb_sync_state['is_running'] or restore_state['is_restoring']:
-        raise HTTPException(409, 'Another run is already active')
-    conflict_state.update(is_running=True, phase='Starting', total=len(request.rating_keys),
-                          resolved=0, skipped=0, failed=0, error=None, results={})
-    asyncio.create_task(_run_kometa_action(request))
-    return {'status': 'started'}
+    task_id = await _enqueue_task('conflict', request.dict())
+    return {'status': 'started', 'task_id': task_id}
 
 
 def _remove_kometa_labels(request):
@@ -1399,7 +1550,19 @@ def _collect_imdb_items(libraries):
 
 @app.get('/api/imdb-sync/status')
 async def get_imdb_sync_status():
-    return imdb_sync_state
+    state = dict(imdb_sync_state)
+    if state.get('is_running') and (state.get('phase', '').startswith('Rendering') or state.get('phase') == 'Poster rendern'):
+        total = max(1, state.get('pending') or state.get('scanned') or 1)
+        state['percent'] = min(99, 85 + int(15 * (state.get('rendered', 0) + processing_state.get('progress', 0)) / total))
+    return state
+
+
+def _imdb_download_progress(stage, done, total):
+    imdb_sync_state['bytes_downloaded'] = done if stage == 'download' else imdb_sync_state.get('bytes_downloaded', 0)
+    imdb_sync_state['bytes_total'] = total if stage == 'download' else imdb_sync_state.get('bytes_total', 0)
+    imdb_sync_state['percent'] = min(84, (25 if stage == 'download' else 60) +
+                                     int((35 if stage == 'download' else 25) * done / total)) if total else 25
+    imdb_sync_state['phase'] = 'IMDb-Datensatz laden' if stage == 'download' else 'IMDb-Datensatz auswerten'
 
 
 class SelectedImdbRequest(BaseModel):
@@ -1411,12 +1574,8 @@ class SelectedImdbRequest(BaseModel):
 async def start_selected_imdb(library_name: str, request: SelectedImdbRequest):
     if request.mode not in ('ratings', 'both') or not 0 < len(request.rating_keys) <= 250:
         raise HTTPException(400, 'Select 1–250 items and a valid action')
-    if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring'] or conflict_state['is_running']:
-        raise HTTPException(409, 'Another run is already active')
-    imdb_sync_state.update(is_running=True, library=library_name, phase='Lese Auswahl', scanned=0, matched=0,
-                           changed=0, rendered=0, failed=0, error=None, logs=[])
-    asyncio.create_task(_run_selected_imdb(library_name, request))
-    return {'status': 'started'}
+    task_id = await _enqueue_task('selected_imdb', {'library': library_name, 'request': request.dict()})
+    return {'status': 'started', 'task_id': task_id}
 
 
 def _resolve_selected_for_imdb(library_name, keys):
@@ -1445,7 +1604,7 @@ async def _run_selected_imdb(library_name, request):
         cache = ImdbRatingCache()
         previous = cache.ratings(ids)
         imdb_sync_state['phase'] = 'IMDb-Wertungen laden'
-        fetched = await asyncio.to_thread(cache.refresh, ids) if ids else {}
+        fetched = await asyncio.to_thread(cache.refresh, ids, _imdb_download_progress) if ids else {}
         imdb_sync_state['matched'] = len(fetched)
         imdb_sync_state['updated_at'] = cache.updated_at()
         logs = []
@@ -1462,6 +1621,7 @@ async def _run_selected_imdb(library_name, request):
         imdb_sync_state['logs'] = logs
         cache.close()
         cache = None
+        imdb_sync_state['percent'] = 85
         if request.mode == 'both':
             settings = _load_settings()
             imdb_sync_state['phase'] = 'Poster rendern'
@@ -1479,6 +1639,7 @@ async def _run_selected_imdb(library_name, request):
             if processing_state.get('error'):
                 raise RuntimeError(processing_state['error'])
         imdb_sync_state['phase'] = 'Abgeschlossen'
+        imdb_sync_state['percent'] = 100
     except Exception as exc:
         imdb_sync_state['error'] = str(exc)
         imdb_sync_state['phase'] = 'Fehlgeschlagen'
@@ -1500,12 +1661,8 @@ async def start_imdb_sync(request: ImdbSyncRequest):
         raise HTTPException(400, 'Invalid IMDb sync mode')
     if not settings.get('imdb_direct', {}).get('enabled'):
         raise HTTPException(400, 'Enable direct IMDb ratings first')
-    if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring'] or conflict_state['is_running']:
-        raise HTTPException(409, 'Another run is already active')
-    imdb_sync_state.update(is_running=True, library=None, phase='Scanning Plex', scanned=0, matched=0,
-                           changed=0, pending=0, rendered=0, failed=0, error=None, logs=[])
-    asyncio.create_task(_run_imdb_sync(request.mode))
-    return {'status': 'started'}
+    task_id = await _enqueue_task('imdb', request.dict())
+    return {'status': 'started', 'task_id': task_id}
 
 
 async def _run_imdb_sync(mode='both'):
@@ -1524,8 +1681,9 @@ async def _run_imdb_sync(mode='both'):
         imdb_sync_state['phase'] = 'Downloading IMDb ratings'
         cache = ImdbRatingCache()
         before = cache.ratings(ids)
-        fetched = await asyncio.to_thread(cache.refresh, ids)
+        fetched = await asyncio.to_thread(cache.refresh, ids, _imdb_download_progress)
         imdb_sync_state['matched'] = len(fetched)
+        imdb_sync_state['percent'] = 85
         imdb_sync_state['updated_at'] = cache.updated_at()
         # Close before handing processing to another thread/connection.
         changed = {}
@@ -1550,6 +1708,7 @@ async def _run_imdb_sync(mode='both'):
             if processing_state.get('error'):
                 raise RuntimeError(f"{library_name}: {processing_state['error']}")
         imdb_sync_state['phase'] = 'Complete'
+        imdb_sync_state['percent'] = 100
     except Exception as exc:
         imdb_sync_state['error'] = str(exc)
         imdb_sync_state['phase'] = 'Failed'
@@ -1599,12 +1758,7 @@ def _reschedule_cron(settings: dict):
 
 
 async def _cron_imdb_sync():
-    if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring'] or conflict_state['is_running']:
-        logger.info('IMDb automatic refresh skipped: another job is running')
-        return
-    imdb_sync_state.update(is_running=True, library=None, phase='Scanning Plex', scanned=0, matched=0,
-                           changed=0, pending=0, rendered=0, failed=0, error=None, logs=[])
-    await _run_imdb_sync('both' if _load_settings()['imdb_direct'].get('auto_render') else 'ratings')
+    await _enqueue_task('imdb', {'mode': 'both' if _load_settings()['imdb_direct'].get('auto_render') else 'ratings'})
 
 
 async def _run_libraries_sequentially(libraries: list, force: bool):
@@ -1625,55 +1779,19 @@ async def _run_libraries_sequentially(libraries: list, force: bool):
     label = "force" if force else "normal"
     for lib_name in libraries:
         logger.info(f"Cron ({label}): processing {lib_name}")
-        await process_library_background(ProcessRequest(
+        await _enqueue_task('process', ProcessRequest(
             library_name=lib_name,
             force=force,
             badge_style=badge_style,
             badge_positions=badge_positions,
             rating_sources=rating_sources,
             media_overlay=media_overlay,
-        ))
+        ).dict())
 
 
 async def _cron_run_libraries(libraries: list, force: bool = False):
-    """Called by APScheduler — starts processing if not already running."""
-    if processing_state["is_processing"] or imdb_sync_state['is_running'] or conflict_state['is_running']:
-        logger.info("Cron: skipping, processing already in progress")
-        return
-    asyncio.create_task(_run_libraries_sequentially(libraries, force))
-
-
-async def _webhook_queue_worker():
-    """Processes webhook-queued items one at a time, waiting if processing is busy."""
-    while True:
-        library_name, rating_key, item_title = await webhook_queue.get()
-        try:
-            # Wait if processing is already running (e.g. cron or manual run)
-            while processing_state["is_processing"] or imdb_sync_state['is_running'] or conflict_state['is_running']:
-                await asyncio.sleep(2)
-            # Load current badge settings so webhook uses same styling as the UI
-            settings = _load_settings()
-            webhook = settings.get("webhook", {})
-            if not webhook.get("enabled"):
-                logger.info("Webhook queue: skipping disabled webhook for %s", library_name)
-                continue
-            badge_style = settings.get("badge_style")
-            badge_positions = settings.get("badge_positions")
-            rating_sources = settings.get("rating_sources")
-            media_overlay = settings.get("media_overlay")
-            logger.info(f"Webhook queue: processing {library_name} / {item_title} (key={rating_key})")
-            await process_library_background(ProcessRequest(
-                library_name=library_name,
-                rating_key=rating_key,
-                badge_style=badge_style,
-                badge_positions=badge_positions,
-                rating_sources=rating_sources,
-                media_overlay=media_overlay,
-            ))
-        except Exception as e:
-            logger.error(f"Webhook queue worker error: {e}")
-        finally:
-            webhook_queue.task_done()
+    """Persist scheduled work before execution, even when another job is active."""
+    await _run_libraries_sequentially(libraries, force)
 
 
 DEFAULT_BADGE_POSITIONS = {
@@ -1715,7 +1833,7 @@ async def startup_event():
     if changed:
         _save_settings(settings)
     _reschedule_cron(settings)
-    asyncio.create_task(_webhook_queue_worker())
+    asyncio.create_task(_task_worker())
 
 
 @app.get("/api/settings")
@@ -1853,10 +1971,10 @@ async def plex_webhook(payload: str = FastAPIForm(...)):
             item_title = metadata.get("title", "unknown")
 
             # Enqueue — worker processes items sequentially, no drops on bulk imports
-            await webhook_queue.put((target_library, rating_key, item_title))
-            queue_size = webhook_queue.qsize()
+            task_id = await _enqueue_task('webhook', {'library': target_library, 'key': rating_key, 'title': item_title})
+            queue_size = len([task for task in await asyncio.to_thread(_with_tasks, 'list') if task['status'] == 'queued'])
             logger.info(f"Webhook queued: {target_library} / {item_title} (key={rating_key}, queue={queue_size})")
-            return {"status": "queued", "library": target_library, "item": item_title, "queue_size": queue_size}
+            return {"status": "queued", "library": target_library, "item": item_title, "queue_size": queue_size, "task_id": task_id}
 
     except Exception as e:
         logger.error(f"Webhook error: {e}")

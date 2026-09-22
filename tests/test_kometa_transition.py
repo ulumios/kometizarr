@@ -51,28 +51,28 @@ class KometaTransitionTest(unittest.TestCase):
         self.assertEqual(main.processing_state['failed'], 0)
 
     def test_library_search_filters_cached_entries(self):
-        cache_key = ('Shows', '')
-        old = main._browse_entries_cache.get(cache_key)
-        try:
-            main._browse_entries_cache[cache_key] = (float('inf'), [
-                {'title': 'Pilot', 'type': 'episode', 'series': 'Lost', 'year': 2004},
-                {'title': 'Finale', 'type': 'episode', 'series': 'Another', 'year': 2005},
-            ])
-            result = asyncio.run(main.browse_library('Shows', q='lost'))
+        from src.rating_overlay.media_index import MediaIndex
+        with tempfile.TemporaryDirectory() as folder:
+            index = MediaIndex(Path(folder) / 'index.sqlite3')
+            entries = [SimpleNamespace(ratingKey=1, title='Lost', type='show', year=2004,
+                                       index=None, parentRatingKey=None),
+                       SimpleNamespace(ratingKey=2, title='Pilot', type='episode', year=2004,
+                                       index=1, parentRatingKey=3, parentIndex=1, grandparentTitle='Lost'),
+                       SimpleNamespace(ratingKey=3, title='Staffel 1', type='season', year=None,
+                                       index=1, parentRatingKey=1)]
+            index.replace_library('Shows', entries)
+            result = index.browse('Shows', episodes=True, q='lost')
             self.assertEqual(result['total'], 1)
             self.assertEqual(result['items'][0]['title'], 'Pilot')
-        finally:
-            if old is None:
-                main._browse_entries_cache.pop(cache_key, None)
-            else:
-                main._browse_entries_cache[cache_key] = old
+            self.assertEqual(index.browse('Shows', parent_key=1)['items'][0]['type'], 'season')
+            index.close()
 
     def test_cache_only_imdb_run_does_not_render(self):
         class Cache:
             def ratings(self, _ids):
                 return {}
 
-            def refresh(self, _ids):
+            def refresh(self, _ids, _progress=None):
                 return {'tt123': 8.4}
 
             def updated_at(self):
@@ -100,7 +100,7 @@ class KometaTransitionTest(unittest.TestCase):
         try:
             main._conflict_scans['Shows'] = {
                 'is_running': False, 'items': [{'key': '7'}],
-                'error': None, 'updated_at': main.time.monotonic()}
+                'error': None, 'updated_at': main.time.time()}
             with patch.object(main, '_scan_kometa_conflicts') as scan:
                 result = asyncio.run(main.get_kometa_conflicts('Shows'))
                 self.assertEqual(result['items'], [{'key': '7'}])

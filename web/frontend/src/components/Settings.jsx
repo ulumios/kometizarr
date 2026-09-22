@@ -282,10 +282,9 @@ export default function Settings() {
   }, [])
 
   useEffect(() => {
-    if (!imdbSync?.is_running) return
     const timer = setInterval(() => fetch('/api/imdb-sync/status').then(r => r.json()).then(setImdbSync).catch(() => {}), 1500)
     return () => clearInterval(timer)
-  }, [imdbSync?.is_running])
+  }, [])
 
   const refreshImdb = async mode => {
     setImdbError('')
@@ -296,7 +295,7 @@ export default function Settings() {
       })
       const data = await response.json()
       if (!response.ok) throw Error(data.detail || 'IMDb refresh could not start')
-      setImdbSync(s => ({ ...s, is_running: true, phase: 'Scanning Plex' }))
+      setImdbSync(s => ({ ...s, is_running: false, phase: `Aufgabe #${data.task_id} wartet` }))
     } catch (e) { setImdbError(e.message) }
   }
 
@@ -453,6 +452,10 @@ export default function Settings() {
           <button disabled={!settings.imdb_direct?.enabled || imdbSync?.is_running || saving} onClick={() => refreshImdb('both')} className="bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm">Wertungen und Poster aktualisieren</button>
         </div>
         {imdbSync && <p className="text-sm text-gray-300">{imdbSync.phase} · {imdbSync.scanned} Plex-Einträge mit IMDb-ID · {imdbSync.matched} IMDb-Werte · {imdbSync.changed} Wertänderungen · {imdbSync.pending || 0} Poster ausstehend · {imdbSync.rendered} gerendert · {imdbSync.failed} fehlgeschlagen{imdbSync.updated_at ? ` · Datenstand ${new Date(imdbSync.updated_at).toLocaleString()}` : ''}</p>}
+        {imdbSync?.is_running && <div role="progressbar" aria-valuenow={imdbSync.percent || 0} aria-valuemin="0" aria-valuemax="100" className="bg-gray-900 rounded h-5 relative overflow-hidden">
+          <div className="bg-blue-600 h-full" style={{ width: `${imdbSync.percent || 0}%` }} />
+          <span className="absolute inset-0 text-center text-xs text-white">{imdbSync.percent || 0}%</span>
+        </div>}
         {(imdbError || imdbSync?.error) && <p role="alert" className="text-red-300 text-sm">{imdbError || imdbSync.error}</p>}
         <p className="text-xs text-gray-500">IMDb stellt den Datensatz für nicht kommerzielle Nutzung bereit; der Download kann entsprechend lange dauern.</p>
       </section>

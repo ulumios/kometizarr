@@ -33,7 +33,7 @@ class PosterProxyTest(unittest.TestCase):
             def ratings(self, _ids):
                 return {'tt123': 7.4}
 
-            def refresh(self, _ids):
+            def refresh(self, _ids, _progress=None):
                 return {'tt123': 7.5}
 
             def updated_at(self):

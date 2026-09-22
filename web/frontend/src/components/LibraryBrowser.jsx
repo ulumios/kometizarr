@@ -13,6 +13,8 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [total, setTotal] = useState(0)
   const [selected, setSelected] = useState([])
   const [loading, setLoading] = useState(false)
+  const [indexing, setIndexing] = useState(false)
+  const [reload, setReload] = useState(0)
   const [error, setError] = useState('')
   const [confirmReset, setConfirmReset] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -31,12 +33,11 @@ export default function LibraryBrowser({ onStartProcessing }) {
   }, [library])
 
   useEffect(() => {
-    if (!imdbJob?.is_running) return
     const timer = setInterval(() => fetch('/api/imdb-sync/status').then(r => r.json()).then(data => {
       if (data.library === library) setImdbJob(data)
     }).catch(() => {}), 1500)
     return () => clearInterval(timer)
-  }, [imdbJob?.is_running, library])
+  }, [library])
 
   useEffect(() => {
     if (imdbJob?.phase === 'Abgeschlossen' && !imdbJob.is_running && imdbJob.rendered > 0) {
@@ -61,13 +62,20 @@ export default function LibraryBrowser({ onStartProcessing }) {
     if (parent) params.set('parent_key', parent.key)
     if (query) params.set('q', query)
     if (searchEpisodes && !parent) params.set('episodes', 'true')
+    if (reload < 0) params.set('refresh', 'true')
     fetch(`/api/library/${encodeURIComponent(library)}/browse?${params}`)
       .then(async r => { const data = await r.json(); if (!r.ok) throw Error(data.detail || 'Library unavailable'); return data })
-      .then(data => { if (active) { setItems(data.items); setTotal(data.total) } })
+      .then(data => { if (active) { setItems(data.items); setTotal(data.total); setIndexing(!!data.is_running); if (data.error) setError(data.error) } })
       .catch(e => { if (active) setError(e.message) })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [library, parent, page, query, searchEpisodes])
+  }, [library, parent, page, query, searchEpisodes, reload])
+
+  useEffect(() => {
+    if (!indexing) return
+    const timer = setTimeout(() => setReload(value => value < 0 ? 0 : value + 1), 2500)
+    return () => clearTimeout(timer)
+  }, [indexing, reload])
 
   const switchLibrary = name => { setLibrary(name); setParent(null); setTrail([]); setSearch(''); setSearchEpisodes(false); setPage(1); setSelected([]); setImdbJob(null) }
   const openFolder = item => { setTrail(previous => [...previous, parent]); setParent(item); setSearch(''); setPage(1); setSelected([]) }
@@ -102,7 +110,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
       })
       const data = await response.json()
       if (!response.ok) throw Error(data.detail || 'IMDb-Lauf konnte nicht gestartet werden')
-      setImdbJob({ is_running: true, phase: 'Lese Auswahl', library, logs: [] })
+      setImdbJob({ is_running: false, phase: `Aufgabe #${data.task_id} wartet`, library, logs: [] })
     } catch (e) { setError(e.message) }
     finally { setBusy(false) }
   }
@@ -120,7 +128,9 @@ export default function LibraryBrowser({ onStartProcessing }) {
         {!parent && libraries.find(lib => lib.name === library)?.type === 'show' && <label className="text-sm flex items-center gap-2">
           <input type="checkbox" checked={searchEpisodes} onChange={e => { setSearchEpisodes(e.target.checked); setPage(1); setSelected([]) }} /> Episoden anzeigen
         </label>}
+        <button type="button" onClick={() => setReload(-1)} disabled={indexing} className="bg-gray-700 rounded px-3 py-2 text-sm disabled:opacity-40">Mit Plex abgleichen</button>
       </div>
+      {indexing && <p className="text-sm text-blue-300 mt-2">Bibliothek wird im Hintergrund indexiert…</p>}
     </div>
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
       <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
@@ -150,6 +160,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
     {imdbJob && <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-3">
       <h3 className="font-semibold">IMDb-Protokoll · {imdbJob.phase}</h3>
       <p className="text-xs text-gray-400">{imdbJob.scanned || 0} Einträge · {imdbJob.matched || 0} IMDb-Titel · {imdbJob.changed || 0} geänderte Werte · {imdbJob.rendered || 0} Poster gerendert</p>
+      {imdbJob.is_running && <div role="progressbar" aria-valuenow={imdbJob.percent || 0} aria-valuemin="0" aria-valuemax="100" className="bg-gray-900 rounded h-4 overflow-hidden"><div className="bg-blue-600 h-full" style={{ width: `${imdbJob.percent || 0}%` }} /></div>}
       {imdbJob.error && <p role="alert" className="text-red-300 text-sm">{imdbJob.error}</p>}
       <div className="max-h-80 overflow-auto space-y-1 text-sm" role="log">{(imdbJob.logs || []).map(row => <div key={row.key} className="flex flex-wrap gap-x-3 gap-y-1 border-b border-gray-700 py-1">
         <span className="flex-1 min-w-44">{row.type === 'episode' ? 'Episode · ' : row.type === 'show' ? 'Serie · ' : 'Film · '}{row.title}</span>

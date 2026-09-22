@@ -3,7 +3,6 @@
 import csv
 import gzip
 import os
-import shutil
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -55,7 +54,7 @@ class ImdbRatingCache:
         row = self.db.execute("SELECT value FROM meta WHERE name='updated_at'").fetchone()
         return row[0] if row else None
 
-    def refresh(self, ids):
+    def refresh(self, ids, progress=None):
         """Reuse a daily dataset download; atomically cache the requested ratings."""
         wanted = set(ids)
         found = {}
@@ -67,14 +66,25 @@ class ImdbRatingCache:
                     response.raise_for_status()
                     response.raw.decode_content = False
                     with source.open('wb') as destination:
-                        shutil.copyfileobj(response.raw, destination)
+                        size = int(getattr(response, 'headers', {}).get('Content-Length') or 0)
+                        copied = 0
+                        while chunk := response.raw.read(1024 * 1024):
+                            destination.write(chunk)
+                            copied += len(chunk)
+                            if progress:
+                                progress('download', copied, size)
             with gzip.open(source, 'rt', encoding='utf-8') as stream:
                 rows = csv.DictReader(stream, delimiter='\t')
                 if not {'tconst', 'averageRating'}.issubset(rows.fieldnames or []):
                     raise ValueError('IMDb ratings dataset has an unexpected format')
-                for row in rows:
+                compressed_size = source.stat().st_size
+                for position, row in enumerate(rows, 1):
                     if row['tconst'] in wanted:
                         found[row['tconst']] = float(row['averageRating'])
+                    if progress and position % 50000 == 0:
+                        progress('parse', min(stream.buffer.fileobj.tell(), compressed_size), compressed_size)
+                if progress:
+                    progress('parse', compressed_size, compressed_size)
             if not fresh:
                 os.replace(source, self.dataset_path)
         finally:
