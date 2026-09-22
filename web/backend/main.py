@@ -1177,6 +1177,21 @@ imdb_sync_state = {'is_running': False, 'phase': 'idle', 'scanned': 0, 'matched'
 
 conflict_state = {'is_running': False, 'phase': 'idle', 'total': 0, 'resolved': 0,
                   'skipped': 0, 'failed': 0, 'error': None, 'results': {}}
+_conflict_scans = {}
+
+
+async def _run_conflict_scan(library_name):
+    state = _conflict_scans[library_name]
+    try:
+        state['items'] = await asyncio.to_thread(_scan_kometa_conflicts, library_name)
+        state['updated_at'] = time.monotonic()
+        state['error'] = None
+    except Exception as exc:
+        logger.exception('Conflict scan failed for %s', library_name)
+        state['error'] = str(exc)
+        state['updated_at'] = time.monotonic()
+    finally:
+        state['is_running'] = False
 
 
 def _scan_kometa_conflicts(library_name):
@@ -1193,10 +1208,8 @@ def _scan_kometa_conflicts(library_name):
     for kind in (('movie',) if library.type == 'movie' else ('show', 'episode')):
         try:
             items = library.search(libtype=kind, label='Overlay')
-        except Exception:
-            items = library.all(libtype=kind)
-        if not items:
-            items = library.all(libtype=kind)
+        except Exception as exc:
+            raise RuntimeError(f'Plex-Labelsuche für {kind} fehlgeschlagen: {exc}') from exc
         for item in items:
             if has_overlay_label(item):
                 found[str(item.ratingKey)] = item
@@ -1225,11 +1238,16 @@ def _scan_kometa_conflicts(library_name):
 
 
 @app.get('/api/kometa/conflicts')
-async def get_kometa_conflicts(library_name: str):
-    try:
-        return {'items': await asyncio.to_thread(_scan_kometa_conflicts, library_name)}
-    except Exception as exc:
-        raise HTTPException(400, str(exc)) from exc
+async def get_kometa_conflicts(library_name: str, refresh: bool = False):
+    state = _conflict_scans.get(library_name)
+    if state is None:
+        state = {'is_running': False, 'items': [], 'error': None, 'updated_at': 0}
+        _conflict_scans[library_name] = state
+    if not state['is_running'] and (refresh or time.monotonic() - state['updated_at'] > 600):
+        state['is_running'] = True
+        state['error'] = None
+        asyncio.create_task(_run_conflict_scan(library_name))
+    return {'items': state['items'], 'is_running': state['is_running'], 'error': state['error']}
 
 
 @app.get('/api/kometa/conflicts/status')
@@ -1306,6 +1324,7 @@ async def _run_kometa_action(request):
         logger.exception('Kometa conflict action failed')
     finally:
         conflict_state['is_running'] = False
+        _conflict_scans.pop(request.library_name, None)
 
 
 def _load_settings() -> dict:

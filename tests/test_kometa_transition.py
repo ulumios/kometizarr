@@ -95,6 +95,23 @@ class KometaTransitionTest(unittest.TestCase):
         self.assertEqual(main.imdb_sync_state['pending'], 1)
         self.assertEqual(main.imdb_sync_state['rendered'], 0)
 
+    def test_conflict_scan_uses_cached_response(self):
+        old = main._conflict_scans.get('Shows')
+        try:
+            main._conflict_scans['Shows'] = {
+                'is_running': False, 'items': [{'key': '7'}],
+                'error': None, 'updated_at': main.time.monotonic()}
+            with patch.object(main, '_scan_kometa_conflicts') as scan:
+                result = asyncio.run(main.get_kometa_conflicts('Shows'))
+                self.assertEqual(result['items'], [{'key': '7'}])
+                self.assertFalse(result['is_running'])
+                scan.assert_not_called()
+        finally:
+            if old is None:
+                main._conflict_scans.pop('Shows', None)
+            else:
+                main._conflict_scans['Shows'] = old
+
 
 if __name__ == '__main__':
     unittest.main()

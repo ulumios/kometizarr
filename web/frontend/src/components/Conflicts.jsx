@@ -11,6 +11,7 @@ export default function Conflicts() {
   const [status, setStatus] = useState(null)
   const [confirm, setConfirm] = useState(null)
   const [posterVersion, setPosterVersion] = useState(() => Date.now())
+  const [scanning, setScanning] = useState(false)
 
   useEffect(() => {
     fetch('/api/libraries').then(r => r.json()).then(data => {
@@ -21,22 +22,29 @@ export default function Conflicts() {
     fetch('/api/kometa/conflicts/status').then(r => r.json()).then(setStatus).catch(() => {})
   }, [])
 
-  const refresh = async () => {
-    if (!library) return
-    setLoading(true)
-    setError('')
+  const refresh = async (libraryName = library, force = false, polling = false) => {
+    if (!libraryName) return
+    if (!polling) { setLoading(true); setError('') }
     try {
-      const response = await fetch(`/api/kometa/conflicts?library_name=${encodeURIComponent(library)}`)
-      const data = await response.json()
-      if (!response.ok) throw Error(data.detail || 'Konflikte konnten nicht geladen werden')
+      const response = await fetch(`/api/kometa/conflicts?library_name=${encodeURIComponent(libraryName)}${force ? '&refresh=true' : ''}`)
+      const body = await response.text()
+      let data
+      try { data = JSON.parse(body) } catch { throw Error(`Serverantwort ${response.status} statt JSON. Bitte Backend-Logs prüfen.`) }
+      if (!response.ok || data.error) throw Error(data.detail || data.error || 'Konflikte konnten nicht geladen werden')
+      setScanning(!!data.is_running)
       setItems(data.items || [])
-      setSelected([])
-      setPosterVersion(Date.now())
-    } catch (e) { setError(e.message) }
-    finally { setLoading(false) }
+      if (!polling) { setSelected([]); setPosterVersion(Date.now()) }
+    } catch (e) { setScanning(false); setError(e.message) }
+    finally { if (!polling) setLoading(false) }
   }
 
-  useEffect(() => { refresh() }, [library])
+  useEffect(() => { refresh(library) }, [library])
+
+  useEffect(() => {
+    if (!scanning || !library) return
+    const timer = setInterval(() => refresh(library, false, true), 2000)
+    return () => clearInterval(timer)
+  }, [scanning, library])
 
   useEffect(() => {
     if (!status?.is_running) return
@@ -45,7 +53,7 @@ export default function Conflicts() {
   }, [status?.is_running])
 
   useEffect(() => {
-    if (status?.phase === 'Abgeschlossen' && !status.is_running) refresh()
+    if (status?.phase === 'Abgeschlossen' && !status.is_running) refresh(library, true)
   }, [status?.is_running, status?.phase])
 
   const visible = useMemo(() => items.filter(item =>
@@ -74,10 +82,10 @@ export default function Conflicts() {
         className={`rounded border px-3 py-2 text-sm ${library === lib.name ? 'border-blue-500 bg-blue-700' : 'border-gray-600 bg-gray-900'}`}>{lib.name}</button>)}</div>
       <div className="flex gap-3"><input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Konflikte durchsuchen…"
         aria-label="Konflikte durchsuchen" className="bg-gray-900 border border-gray-600 rounded px-3 py-2 flex-1 text-sm" />
-        <button onClick={refresh} disabled={loading || status?.is_running} className="bg-gray-700 rounded px-3 py-2 text-sm">Aktualisieren</button></div>
+        <button onClick={() => refresh(library, true)} disabled={loading || scanning || status?.is_running} className="bg-gray-700 rounded px-3 py-2 text-sm">Aktualisieren</button></div>
     </div>
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-      <div className="flex justify-between mb-4 text-sm"><span>{loading ? 'Plex wird geprüft…' : `${visible.length} von ${items.length} Konflikten`}</span>
+      <div className="flex justify-between mb-4 text-sm"><span>{scanning ? 'Plex wird im Hintergrund geprüft…' : loading ? 'Lade…' : `${visible.length} von ${items.length} Konflikten`}</span>
         <button onClick={() => setSelected(previous => visible.every(item => previous.includes(item.key)) ? previous.filter(key => !visible.some(item => item.key === key)) : [...new Set([...previous, ...visible.map(item => item.key)])])} className="text-blue-300">Sichtbare auswählen/abwählen</button></div>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">{visible.map(item => <button key={item.key} onClick={() => setSelected(previous => previous.includes(item.key) ? previous.filter(key => key !== item.key) : [...previous, item.key])}
         className={`rounded-lg overflow-hidden text-left border ${selected.includes(item.key) ? 'border-blue-500' : 'border-gray-600'}`}>
