@@ -839,15 +839,15 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                   {/* Logo Size */}
                   <div>
                     <label className="text-xs text-gray-400 block mb-1">
-                      Logo Size: {(badgeStyle.logo_size_multiplier || 1.0).toFixed(1)}x
+                      Logo Size: {((badgeStyle.logo_size_multiplier || 2.0) / 2).toFixed(1)}x
                     </label>
                     <input
                       type="range"
-                      min="0.3"
-                      max="2.0"
+                      min="0.25"
+                      max="1.5"
                       step="0.1"
-                      value={badgeStyle.logo_size_multiplier || 1.0}
-                      onChange={(e) => updateBadgeStyle('logo_size_multiplier', parseFloat(e.target.value))}
+                      value={(badgeStyle.logo_size_multiplier || 2.0) / 2}
+                      onChange={(e) => updateBadgeStyle('logo_size_multiplier', parseFloat(e.target.value) * 2)}
                       className="w-full accent-blue-500"
                     />
                   </div>

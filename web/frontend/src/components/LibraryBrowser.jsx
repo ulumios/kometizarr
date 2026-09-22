@@ -89,7 +89,8 @@ export default function LibraryBrowser({ onStartProcessing }) {
     try {
       const response = await fetch(reset ? '/api/restore' : '/api/process', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ library_name: library, rating_keys: selected, force: true, reset_to_plex: reset }),
+        body: JSON.stringify({ library_name: library, rating_keys: selected, force: reset,
+          poster_source: reset ? null : 'current', reset_to_plex: reset }),
       })
       const data = await response.json()
       if (!response.ok || data.error || data.status !== 'started') throw Error(data.error || data.detail || 'Could not start')
@@ -101,6 +102,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
 
   const launchImdb = async mode => {
     if (!selected.length || busy || imdbJob?.is_running) return
+    if (mode === 'both' && !window.confirm('Falls das aktuelle Plex-Poster noch ein Kometa-Overlay enthält, kann ein Doppel-Overlay entstehen. Trotzdem fortfahren?')) return
     setBusy(true)
     setError('')
     try {
@@ -152,9 +154,8 @@ export default function LibraryBrowser({ onStartProcessing }) {
     {error && <p role="alert" className="text-red-300">{error}</p>}
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 flex flex-wrap items-center gap-3">
       <span className="text-sm mr-auto">{selected.length} ausgewählt</span>
-      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launch(false)} className="px-4 py-2 rounded bg-blue-600 disabled:opacity-40">Overlay erzwingen</button>
-      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launchImdb('ratings')} className="px-4 py-2 rounded bg-violet-700 disabled:opacity-40">Nur IMDb-Wertungen aktualisieren</button>
-      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launchImdb('both')} className="px-4 py-2 rounded bg-emerald-700 disabled:opacity-40">Poster und IMDb-Wertungen</button>
+      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launch(false)} className="px-4 py-2 rounded bg-blue-600 disabled:opacity-40">Nur Overlay</button>
+      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launchImdb('both')} className="px-4 py-2 rounded bg-emerald-700 disabled:opacity-40">Overlay mit aktueller IMDb</button>
       <button disabled={!selected.length || busy} onClick={() => setConfirmReset(true)} className="px-4 py-2 rounded bg-orange-700 disabled:opacity-40">Plex-Poster zurücksetzen</button>
     </div>
     {imdbJob && <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-3">

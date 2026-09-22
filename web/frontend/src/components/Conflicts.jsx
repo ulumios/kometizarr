@@ -13,6 +13,8 @@ export default function Conflicts() {
   const [posterVersion, setPosterVersion] = useState(() => Date.now())
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState({ phase: '', percent: 0, processed: 0, total: 0, skipped: 0 })
+  const [page, setPage] = useState(1)
+  const pageSize = 60
 
   useEffect(() => {
     fetch('/api/libraries').then(r => r.json()).then(data => {
@@ -71,6 +73,7 @@ export default function Conflicts() {
 
   const visible = useMemo(() => items.filter(item =>
     `${item.title} ${item.series || ''} ${item.year || ''}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [items, query])
+  const pageItems = visible.slice((page - 1) * pageSize, page * pageSize)
 
   const start = async action => {
     setConfirm(null)
@@ -95,7 +98,7 @@ export default function Conflicts() {
         className={`rounded border px-3 py-2 text-sm ${library === lib.name ? 'border-blue-500 bg-blue-700' : 'border-gray-600 bg-gray-900'}`}>{lib.name}</button>)}</div>
       <div className="flex gap-3"><input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Konflikte durchsuchen…"
         aria-label="Konflikte durchsuchen" className="bg-gray-900 border border-gray-600 rounded px-3 py-2 flex-1 text-sm" />
-        <button onClick={() => refresh(library, true)} disabled={loading || scanning || status?.is_running} className="bg-gray-700 rounded px-3 py-2 text-sm">Aktualisieren</button></div>
+        </div>
       {scanning && <div className="space-y-1" role="progressbar" aria-valuenow={scanProgress.percent} aria-valuemin="0" aria-valuemax="100" aria-label="Konflikte durchsuchen">
         <div className="text-xs text-blue-200">{scanProgress.phase} · {scanProgress.percent}%{scanProgress.total ? ` · ${scanProgress.processed}/${scanProgress.total} geprüft` : ''}{scanProgress.skipped ? ` · ${scanProgress.skipped} nicht mehr in Plex` : ''}</div>
         <div className="h-2 rounded bg-gray-700 overflow-hidden"><div className="h-full bg-blue-500 transition-all" style={{ width: `${scanProgress.percent}%` }} /></div>
@@ -104,7 +107,7 @@ export default function Conflicts() {
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
       <div className="flex justify-between mb-4 text-sm"><span>{scanning ? 'Plex wird im Hintergrund geprüft…' : loading ? 'Lade…' : `${visible.length} von ${items.length} Konflikten`}</span>
         <button onClick={() => setSelected(previous => visible.every(item => previous.includes(item.key)) ? previous.filter(key => !visible.some(item => item.key === key)) : [...new Set([...previous, ...visible.map(item => item.key)])])} className="text-blue-300">Sichtbare auswählen/abwählen</button></div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">{visible.map(item => <button key={item.key} onClick={() => setSelected(previous => previous.includes(item.key) ? previous.filter(key => key !== item.key) : [...previous, item.key])}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">{pageItems.map(item => <button key={item.key} onClick={() => setSelected(previous => previous.includes(item.key) ? previous.filter(key => key !== item.key) : [...previous, item.key])}
         className={`rounded-lg overflow-hidden text-left border ${selected.includes(item.key) ? 'border-blue-500' : 'border-gray-600'}`}>
         <div className="relative aspect-[2/3] bg-gray-900"><span className="absolute inset-0 flex items-center justify-center text-xs">Kein Poster</span>
           <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${item.key}?v=${posterVersion}`} alt="" className="absolute inset-0 w-full h-full object-cover" onError={e => { e.currentTarget.style.display = 'none' }} />
@@ -112,6 +115,7 @@ export default function Conflicts() {
         <div className="p-2 text-sm"><div className="truncate">{item.series && `${item.series} · `}{item.title}</div>
           <div className="text-xs text-amber-300">{item.pending_manual ? 'Wartet auf neues Plex-Poster' : item.manual_ready ? 'Neues Plex-Poster erkannt · bereit' : item.has_kometizarr_overlay ? 'Kometa-Label + Kometizarr-Overlay' : 'Kometa-Label'}</div></div>
       </button>)}</div>
+      {visible.length > pageSize && <div className="flex gap-4 mt-5"><button disabled={page === 1} onClick={() => setPage(page - 1)}>← Zurück</button><span>Seite {page} / {Math.ceil(visible.length / pageSize)}</span><button disabled={page * pageSize >= visible.length} onClick={() => setPage(page + 1)}>Weiter →</button></div>}
     </div>
     {error && <p role="alert" className="text-red-300">{error}</p>}
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-3">

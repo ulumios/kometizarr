@@ -687,6 +687,7 @@ async def process_library_background(request: ProcessRequest):
             needs_reset = kometa_label and (render_force or request.reset_kometa or (
                 not already_processed and _load_settings()['kometa_conflicts'].get('auto_reset', False)))
             if kometa_label and not already_processed and not needs_reset:
+                await asyncio.to_thread(_remember_kometa_conflict, request.library_name, item)
                 processing_state['skipped'] += 1
                 if request.record_results:
                     processing_state['item_results'][str(item.ratingKey)] = 'Kometa-Konflikt: Reset erforderlich'
@@ -1258,6 +1259,29 @@ conflict_state = {'is_running': False, 'phase': 'idle', 'total': 0, 'resolved': 
 _conflict_scans = {}
 
 
+def _remember_kometa_conflict(library_name, item):
+    """Persist a conflict discovered by a webhook or manual render."""
+    from src.rating_overlay.media_index import MediaIndex
+    index = MediaIndex()
+    try:
+        _, rows = index.snapshot(library_name, 'conflicts')
+        rows = rows or []
+        key = str(item.ratingKey)
+        entry = {'key': key, 'title': item.title, 'type': item.type,
+                 'year': getattr(item, 'year', None),
+                 'series': getattr(item, 'grandparentTitle', None),
+                 'season': getattr(item, 'parentIndex', None),
+                 'episode': getattr(item, 'index', None),
+                 'has_kometizarr_overlay': False, 'pending_manual': False,
+                 'manual_ready': False}
+        rows = [row for row in rows if str(row.get('key')) != key]
+        rows.append(entry)
+        index.save_snapshot(library_name, 'conflicts', rows)
+        _conflict_scans.pop(library_name, None)
+    finally:
+        index.close()
+
+
 def _with_tasks(action, *args):
     from src.rating_overlay.task_queue import TaskQueue
     queue = TaskQueue()
@@ -1478,11 +1502,8 @@ async def get_kometa_conflicts(library_name: str, refresh: bool = False):
         _conflict_scans[library_name] = state
     for name, default in (('phase', 'Bereit'), ('percent', 0), ('processed', 0), ('total', 0), ('skipped', 0)):
         state.setdefault(name, default)
-    if not state['is_running'] and (refresh or time.time() - state['updated_at'] > 600) and (refresh or not state['error']):
-        state['is_running'] = True
-        state['error'] = None
-        state.update(phase='Verbinde mit Plex', percent=0, processed=0, total=0, skipped=0)
-        asyncio.create_task(_run_conflict_scan(library_name))
+    # Konflikte werden beim Webhook oder Overlay-Lauf erkannt und als Snapshot
+    # gespeichert. Das Öffnen dieses Reiters startet keinen Plex-Scan.
     return {'items': state['items'], 'is_running': state['is_running'], 'error': state['error'],
             'phase': state['phase'], 'percent': state['percent'], 'processed': state['processed'],
             'total': state['total'], 'skipped': state['skipped']}
