@@ -47,7 +47,7 @@ def _read_library_index(library_name, parent_key, episodes, q, page, page_size):
         index.close()
 
 
-def _refresh_library_index(library_name):
+def _refresh_library_index(library_name, progress=None):
     from plexapi.server import PlexServer
     from src.rating_overlay.media_index import MediaIndex
     library = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN')).library.section(library_name)
@@ -57,6 +57,9 @@ def _refresh_library_index(library_name):
     if library.type == 'show':
         items.extend(library.all(libtype='season'))
         items.extend(library.all(libtype='episode'))
+    if progress is not None:
+        progress['total'] = len(items)
+        progress['scanned'] = len(items)
     index = MediaIndex()
     try:
         index.replace_library(library_name, items)
@@ -88,13 +91,14 @@ def _index_new_item(library_name, item):
 
 async def _run_library_index_scan(library_name):
     try:
-        await asyncio.to_thread(_refresh_library_index, library_name)
+        await asyncio.to_thread(_refresh_library_index, library_name, _library_index_scans[library_name])
         _library_index_scans[library_name]['error'] = None
     except Exception as exc:
         logger.exception('Library index refresh failed for %s', library_name)
         _library_index_scans[library_name]['error'] = str(exc)
     finally:
         _library_index_scans[library_name]['is_running'] = False
+        _library_index_scans[library_name]['finished_at'] = time.time()
 
 
 def _invalidate_browse_poster(library, rating_key):
@@ -1240,7 +1244,17 @@ async def _enqueue_task(kind, payload):
 
 @app.get('/api/tasks')
 async def list_tasks():
-    return {'tasks': await asyncio.to_thread(_with_tasks, 'list')}
+    tasks = await asyncio.to_thread(_with_tasks, 'list')
+    for library, state in _library_index_scans.items():
+        if state.get('is_running') or state.get('finished_at'):
+            total, done = state.get('total', 0), state.get('scanned', 0)
+            tasks.insert(0, {'id': f'library-scan:{library}', 'kind': 'library_scan',
+                'status': 'running' if state.get('is_running') else ('failed' if state.get('error') else 'completed'),
+                'created_at': state.get('started_at') or time.time(), 'payload': {'libraries': [library]},
+                'target': {'library': library}, 'error': state.get('error'),
+                'progress': {'percent': int(done * 100 / total) if total else 0, 'done': done,
+                              'total': total, 'phase': 'Bibliothek scannen'}})
+    return {'tasks': tasks}
 
 
 async def _task_worker():
@@ -1874,6 +1888,37 @@ async def startup_event():
         _save_settings(settings)
     _reschedule_cron(settings)
     asyncio.create_task(_task_worker())
+
+
+@app.get('/api/library-scan/status')
+async def library_scan_status():
+    return {'scans': _library_index_scans}
+
+
+class LibraryScanRequest(BaseModel):
+    libraries: List[str]
+
+
+@app.post('/api/library-scan')
+async def start_library_scan(request: LibraryScanRequest):
+    from plexapi.server import PlexServer
+    if not request.libraries:
+        raise HTTPException(400, 'Select at least one library')
+    server = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
+    available = {section.title for section in server.library.sections()}
+    unknown = [name for name in request.libraries if name not in available]
+    if unknown:
+        raise HTTPException(404, f'Unknown library: {unknown[0]}')
+    started = []
+    for name in request.libraries:
+        state = _library_index_scans.setdefault(name, {})
+        if state.get('is_running'):
+            continue
+        state.update(is_running=True, error=None, scanned=0, total=0,
+                     started_at=time.time(), finished_at=None)
+        asyncio.create_task(_run_library_index_scan(name))
+        started.append(name)
+    return {'status': 'started', 'libraries': started}
 
 
 @app.get("/api/settings")

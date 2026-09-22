@@ -259,6 +259,15 @@ export default function Settings() {
   const [deleteLibs, setDeleteLibs] = useState([])
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleteResult, setDeleteResult] = useState(null)
+  const [scanLibs, setScanLibs] = useState([])
+  const [scanStates, setScanStates] = useState({})
+  useEffect(() => {
+    const load = () => fetch('/api/library-scan/status').then(r => r.json()).then(d => setScanStates(d.scans || {})).catch(() => {})
+    load(); const timer = setInterval(load, 1200); return () => clearInterval(timer)
+  }, [])
+  const startLibraryScan = async () => {
+    await fetch('/api/library-scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ libraries: scanLibs }) })
+  }
 
   // Poll fresh posters status while running
   useEffect(() => {
@@ -548,6 +557,16 @@ export default function Settings() {
       {/* ── Library Maintenance ───────────────────────────────────── */}
       <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-6">
         <h2 className="text-white font-semibold text-base">🔧 Library Maintenance</h2>
+
+        <div>
+          <h3 className="text-sm font-medium text-gray-300 mb-2">Lokalen Bibliotheksindex aktualisieren</h3>
+          <p className="text-xs text-gray-400 mb-3">Nur die ausgewählten Bibliotheken werden von Plex gelesen. Der Fortschritt bleibt auch unter „Aufgaben“ sichtbar.</p>
+          <div className="flex flex-wrap gap-2 mb-3">{libraries.map(lib => { const checked = scanLibs.includes(lib.name); const s = scanStates[lib.name]; return <button key={lib.name} type="button" onClick={() => setScanLibs(p => checked ? p.filter(x => x !== lib.name) : [...p, lib.name])} className={`px-3 py-1 rounded-full text-xs border ${checked ? 'bg-blue-700/60 border-blue-500 text-blue-200' : 'bg-gray-800 border-gray-600 text-gray-400'}`}>{checked ? '✓ ' : ''}{lib.name}{s?.is_running ? ' ⏳' : ''}</button> })}</div>
+          <button onClick={startLibraryScan} disabled={!scanLibs.length} className="px-4 py-1.5 bg-blue-600 disabled:bg-gray-700 rounded text-sm text-white">Bibliotheken scannen</button>
+          {scanLibs.map(name => { const s = scanStates[name]; if (!s) return null; const pct = s.total ? Math.round((s.scanned / s.total) * 100) : 0; return <div key={name} className="mt-3 text-xs text-gray-300"><div className="flex justify-between"><span>{name}</span><span>{s.scanned || 0} / {s.total || '…'} ({pct}%)</span></div><div className="h-1.5 bg-gray-700 rounded mt-1"><div className="h-1.5 bg-blue-500 rounded" style={{width: `${pct}%`}} /></div>{s.error && <div className="text-red-400 mt-1">{s.error}</div>}</div> })}
+        </div>
+
+        <hr className="border-gray-700" />
 
         {/* Fetch Fresh Posters */}
         <div>
