@@ -681,7 +681,7 @@ async def process_library_background(request: ProcessRequest):
                 manual_queue.remove(request.library_name, item)
             kometa_label = has_overlay_label(item)
             already_processed = has_kometizarr_overlay(manager.backup_manager, request.library_name, item)
-            needs_reset = kometa_label and (request.reset_kometa or (
+            needs_reset = kometa_label and (request.force or request.reset_kometa or (
                 not already_processed and _load_settings()['kometa_conflicts'].get('auto_reset', False)))
             if kometa_label and not already_processed and not needs_reset:
                 processing_state['skipped'] += 1
