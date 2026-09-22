@@ -228,7 +228,7 @@ function ProcessingProgress({ onComplete, progressData, setProgressData, compact
               {isRestoring
                 ? 'Original posters are being restored from backups. This page will update in real-time as items are restored.'
                 : progressData.force_mode
-                ? 'Using backed up original posters to apply fresh overlays with updated ratings. Original backups are never overwritten. This page will update in real-time as items are processed.'
+                ? 'Using the current Plex poster to apply a fresh overlay. Original backups are never overwritten. This page will update in real-time as items are processed.'
                 : 'Multi-source rating overlays are being applied to your Plex library. This page will update in real-time as items are processed.'}
             </div>
           </div>
