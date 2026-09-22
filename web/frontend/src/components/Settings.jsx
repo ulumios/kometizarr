@@ -287,11 +287,13 @@ export default function Settings() {
     return () => clearInterval(timer)
   }, [imdbSync?.is_running])
 
-  const refreshImdb = async () => {
+  const refreshImdb = async mode => {
     setImdbError('')
     try {
       await saveSettings({ imdb_direct: settings.imdb_direct })
-      const response = await fetch('/api/imdb-sync', { method: 'POST' })
+      const response = await fetch('/api/imdb-sync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }),
+      })
       const data = await response.json()
       if (!response.ok) throw Error(data.detail || 'IMDb refresh could not start')
       setImdbSync(s => ({ ...s, is_running: true, phase: 'Scanning Plex' }))
@@ -432,10 +434,11 @@ export default function Settings() {
 
       <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
         <h2 className="text-white font-semibold">IMDb-Wertungen direkt aktualisieren</h2>
-        <p className="text-sm text-gray-400">Lädt den offiziellen IMDb-Bewertungsdatensatz und speichert die Werte deiner Plex-Titel lokal. Beim ersten Lauf werden vorhandene Overlays mit passender IMDb-ID neu erstellt; danach nur bei geändertem Wert. Episoden ohne eigene IMDb-ID werden übersprungen.</p>
+        <p className="text-sm text-gray-400">IMDb-Werte lokal speichern oder zusätzlich Poster aktualisieren. Ein Cache-Lauf verändert keine Poster. Episoden ohne eigene IMDb-ID werden übersprungen.</p>
         <label className="flex gap-3 items-center text-sm"><input type="checkbox" checked={!!settings.imdb_direct?.enabled} onChange={e => setSettings(s => ({ ...s, imdb_direct: { ...s.imdb_direct, enabled: e.target.checked } }))} />IMDb-Datensatz für neue Overlays verwenden</label>
-        <label className="flex gap-3 items-center text-sm"><input type="checkbox" checked={!!settings.imdb_direct?.auto_refresh} onChange={e => setSettings(s => ({ ...s, imdb_direct: { ...s.imdb_direct, auto_refresh: e.target.checked } }))} />Täglich automatisch prüfen</label>
-        {settings.imdb_direct?.auto_refresh && <label className="text-sm flex items-center gap-3">Stunde (Serverzeit) <input type="number" min="0" max="23" value={settings.imdb_direct?.hour ?? 4} onChange={e => setSettings(s => ({ ...s, imdb_direct: { ...s.imdb_direct, hour: Number(e.target.value) } }))} className="bg-gray-900 border border-gray-600 rounded p-1 w-16" /></label>}
+        <label className="flex gap-3 items-center text-sm"><input type="checkbox" checked={!!settings.imdb_direct?.auto_fetch} onChange={e => setSettings(s => ({ ...s, imdb_direct: { ...s.imdb_direct, auto_fetch: e.target.checked, auto_render: e.target.checked ? s.imdb_direct?.auto_render : false } }))} />Täglich IMDb-Wertungen im Cache aktualisieren</label>
+        <label className="flex gap-3 items-center text-sm"><input type="checkbox" checked={!!settings.imdb_direct?.auto_render} onChange={e => setSettings(s => ({ ...s, imdb_direct: { ...s.imdb_direct, auto_fetch: e.target.checked || s.imdb_direct?.auto_fetch, auto_render: e.target.checked } }))} />Danach Poster bei geänderter oder noch nie angewendeter Wertung aktualisieren</label>
+        {(settings.imdb_direct?.auto_fetch || settings.imdb_direct?.auto_render) && <label className="text-sm flex items-center gap-3">Stunde (Serverzeit) <input type="number" min="0" max="23" value={settings.imdb_direct?.hour ?? 4} onChange={e => setSettings(s => ({ ...s, imdb_direct: { ...s.imdb_direct, hour: Number(e.target.value) } }))} className="bg-gray-900 border border-gray-600 rounded p-1 w-16" /></label>}
         <div className="text-sm text-gray-300">Bibliotheken (keine Auswahl = alle):</div>
         <div className="flex flex-wrap gap-2">{libraries.filter(l => ['show', 'movie'].includes(l.type)).map(lib => {
           const selected = (settings.imdb_direct?.libraries || []).includes(lib.name)
@@ -446,11 +449,24 @@ export default function Settings() {
         })}</div>
         <div className="flex gap-3 flex-wrap">
           <button disabled={saving} onClick={() => saveSettings({ imdb_direct: settings.imdb_direct })} className="bg-gray-700 rounded px-4 py-2 text-sm">Einstellungen speichern</button>
-          <button disabled={!settings.imdb_direct?.enabled || imdbSync?.is_running || saving} onClick={refreshImdb} className="bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm">IMDb abrufen und Änderungen rendern</button>
+          <button disabled={!settings.imdb_direct?.enabled || imdbSync?.is_running || saving} onClick={() => refreshImdb('ratings')} className="bg-violet-700 disabled:opacity-40 rounded px-4 py-2 text-sm">Nur Wertungen in Cache schreiben</button>
+          <button disabled={!settings.imdb_direct?.enabled || imdbSync?.is_running || saving} onClick={() => refreshImdb('both')} className="bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm">Wertungen und Poster aktualisieren</button>
         </div>
-        {imdbSync && <p className="text-sm text-gray-300">{imdbSync.phase} · {imdbSync.scanned} Plex-Einträge mit IMDb-ID · {imdbSync.matched} IMDb-Werte · {imdbSync.changed} Änderungen · {imdbSync.rendered} gerendert · {imdbSync.failed} fehlgeschlagen{imdbSync.updated_at ? ` · Datenstand ${new Date(imdbSync.updated_at).toLocaleString()}` : ''}</p>}
+        {imdbSync && <p className="text-sm text-gray-300">{imdbSync.phase} · {imdbSync.scanned} Plex-Einträge mit IMDb-ID · {imdbSync.matched} IMDb-Werte · {imdbSync.changed} Wertänderungen · {imdbSync.pending || 0} Poster ausstehend · {imdbSync.rendered} gerendert · {imdbSync.failed} fehlgeschlagen{imdbSync.updated_at ? ` · Datenstand ${new Date(imdbSync.updated_at).toLocaleString()}` : ''}</p>}
         {(imdbError || imdbSync?.error) && <p role="alert" className="text-red-300 text-sm">{imdbError || imdbSync.error}</p>}
         <p className="text-xs text-gray-500">IMDb stellt den Datensatz für nicht kommerzielle Nutzung bereit; der Download kann entsprechend lange dauern.</p>
+      </section>
+
+      <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-3">
+        <h2 className="text-white font-semibold">Kometa-Übergang</h2>
+        <p className="text-sm text-gray-400">Einträge mit dem Plex-Label „Overlay“ werden vor dem ersten Kometizarr-Render geschützt. Im Reiter „Konflikte“ kannst du sie einzeln prüfen.</p>
+        <label className="text-sm flex gap-3 items-center"><input type="checkbox" checked={!!settings.kometa_conflicts?.auto_reset}
+          onChange={e => setSettings(s => ({ ...s, kometa_conflicts: { ...s.kometa_conflicts, auto_reset: e.target.checked } }))} />
+          Agent-Poster beim ersten Kometizarr-Lauf automatisch wählen
+        </label>
+        <p className="text-xs text-gray-500">Ist kein Agent-Poster vorhanden, wird das Item übersprungen. Das Kometa-Label wird erst nach erfolgreichem Rendern entfernt.</p>
+        <button onClick={() => saveSettings({ kometa_conflicts: settings.kometa_conflicts })} disabled={saving}
+          className="bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm">Kometa-Einstellung speichern</button>
       </section>
 
       {/* ── Plex Webhook ──────────────────────────────────────────── */}

@@ -4,7 +4,11 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [libraries, setLibraries] = useState([])
   const [library, setLibrary] = useState('')
   const [parent, setParent] = useState(null)
+  const [trail, setTrail] = useState([])
   const [page, setPage] = useState(1)
+  const [search, setSearch] = useState('')
+  const [query, setQuery] = useState('')
+  const [searchEpisodes, setSearchEpisodes] = useState(false)
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [selected, setSelected] = useState([])
@@ -14,6 +18,11 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [busy, setBusy] = useState(false)
   const [posterVersion, setPosterVersion] = useState(() => Date.now())
   const [imdbJob, setImdbJob] = useState(null)
+
+  useEffect(() => {
+    const timer = setTimeout(() => { setQuery(search.trim()); setPage(1) }, 250)
+    return () => clearTimeout(timer)
+  }, [search])
 
   useEffect(() => {
     fetch('/api/imdb-sync/status').then(r => r.json()).then(data => {
@@ -48,18 +57,21 @@ export default function LibraryBrowser({ onStartProcessing }) {
     let active = true
     setLoading(true)
     setError('')
-    const query = new URLSearchParams({ page: String(page) })
-    if (parent) query.set('parent_key', parent.key)
-    fetch(`/api/library/${encodeURIComponent(library)}/browse?${query}`)
+    const params = new URLSearchParams({ page: String(page) })
+    if (parent) params.set('parent_key', parent.key)
+    if (query) params.set('q', query)
+    if (searchEpisodes && !parent) params.set('episodes', 'true')
+    fetch(`/api/library/${encodeURIComponent(library)}/browse?${params}`)
       .then(async r => { const data = await r.json(); if (!r.ok) throw Error(data.detail || 'Library unavailable'); return data })
       .then(data => { if (active) { setItems(data.items); setTotal(data.total) } })
       .catch(e => { if (active) setError(e.message) })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [library, parent, page])
+  }, [library, parent, page, query, searchEpisodes])
 
-  const switchLibrary = name => { setLibrary(name); setParent(null); setPage(1); setSelected([]); setImdbJob(null) }
-  const openShow = item => { setParent(item); setPage(1); setSelected([]) }
+  const switchLibrary = name => { setLibrary(name); setParent(null); setTrail([]); setSearch(''); setSearchEpisodes(false); setPage(1); setSelected([]); setImdbJob(null) }
+  const openFolder = item => { setTrail(previous => [...previous, parent]); setParent(item); setSearch(''); setPage(1); setSelected([]) }
+  const goBack = () => { setParent(trail.at(-1) || null); setTrail(previous => previous.slice(0, -1)); setSearch(''); setPage(1); setSelected([]) }
   const toggle = key => setSelected(previous => previous.includes(key) ? previous.filter(k => k !== key) : [...previous, key])
   const allVisible = items.length > 0 && items.every(item => selected.includes(item.key))
   const launch = async reset => {
@@ -101,11 +113,18 @@ export default function LibraryBrowser({ onStartProcessing }) {
       <p className="text-sm text-gray-400 mb-4">Eine Serie wählt ihr Hauptposter. Öffne sie, um einzelne Staffeln auszuwählen; eine Staffel bearbeitet ihre Episodenbilder.</p>
       <div className="flex flex-wrap gap-2">{libraries.map(lib => <button key={lib.name} onClick={() => switchLibrary(lib.name)}
         className={`px-3 py-2 rounded border ${library === lib.name ? 'bg-blue-700 border-blue-500' : 'bg-gray-900 border-gray-600 hover:border-gray-400'}`}>{lib.name}</button>)}</div>
-      {parent && <button className="text-blue-300 mt-4 hover:underline" onClick={() => { setParent(null); setPage(1); setSelected([]) }}>← {library} / {parent.title}</button>}
+      {parent && <button className="text-blue-300 mt-4 hover:underline" onClick={goBack}>← {library} / {parent.title}</button>}
+      <div className="mt-4 flex flex-wrap gap-3 items-center">
+        <input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Titel, Serie, Staffel oder Jahr suchen…"
+          aria-label="Bibliothek durchsuchen" className="bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm flex-1 min-w-52" />
+        {!parent && libraries.find(lib => lib.name === library)?.type === 'show' && <label className="text-sm flex items-center gap-2">
+          <input type="checkbox" checked={searchEpisodes} onChange={e => { setSearchEpisodes(e.target.checked); setPage(1); setSelected([]) }} /> Episoden anzeigen
+        </label>}
+      </div>
     </div>
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
       <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
-        <span>{loading ? 'Lade Einträge…' : `${total} ${parent ? 'Staffeln' : 'Einträge'}`}</span>
+        <span>{loading ? 'Lade Einträge…' : `${total} ${parent?.type === 'show' ? 'Staffeln' : parent?.type === 'season' || searchEpisodes ? 'Episoden' : 'Einträge'}`}</span>
         <button disabled={!items.length} onClick={() => setSelected(previous => allVisible ? previous.filter(k => !items.some(item => item.key === k)) : [...new Set([...previous, ...items.map(item => item.key)])])}
           className="text-sm text-blue-300 disabled:text-gray-600">{allVisible ? 'Sichtbare abwählen' : 'Sichtbare auswählen'}</button>
       </div>
@@ -115,8 +134,8 @@ export default function LibraryBrowser({ onStartProcessing }) {
           <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${encodeURIComponent(item.key)}?v=${posterVersion}`} alt="" className="absolute inset-0 w-full h-full object-cover" onError={event => { event.currentTarget.style.display = 'none' }} />
           <span className={`absolute top-2 right-2 rounded px-2 py-1 text-sm ${selected.includes(item.key) ? 'bg-blue-600 text-white' : 'bg-gray-900/90 text-gray-200'}`}>{selected.includes(item.key) ? '✓' : '○'}</span>
         </button>
-        <div className="p-2.5"><div className="text-sm truncate" title={item.title}>{item.type === 'season' ? `Staffel ${item.index ?? '–'} · ` : ''}{item.title} {item.year ? `(${item.year})` : ''}</div>
-        {item.type === 'show' && <button className="text-blue-300 text-xs mt-1" onClick={() => openShow(item)}>Staffeln anzeigen →</button>}</div>
+        <div className="p-2.5"><div className="text-sm truncate" title={item.title}>{item.type === 'season' ? `Staffel ${item.index ?? '–'} · ` : item.type === 'episode' ? `${item.series ? `${item.series} · ` : ''}S${String(item.season ?? 0).padStart(2, '0')}E${String(item.index ?? 0).padStart(2, '0')} · ` : ''}{item.title} {item.year ? `(${item.year})` : ''}</div>
+        {['show', 'season'].includes(item.type) && <button className="text-blue-300 text-xs mt-1" onClick={() => openFolder(item)}>{item.type === 'show' ? 'Staffeln anzeigen' : 'Episoden anzeigen'} →</button>}</div>
       </div>)}</div>
       {total > 60 && <div className="flex items-center gap-4 mt-5"><button disabled={page === 1} onClick={() => setPage(page - 1)}>← Zurück</button><span>Seite {page} / {Math.ceil(total / 60)}</span><button disabled={page * 60 >= total} onClick={() => setPage(page + 1)}>Weiter →</button></div>}
     </div>

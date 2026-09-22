@@ -103,6 +103,7 @@ class ProcessRequest(BaseModel):
     reset_to_plex: bool = False
     use_imdb_cache: bool = False
     record_results: bool = False
+    reset_kometa: bool = False
 
 
 class ProcessBatchRequest(BaseModel):
@@ -142,10 +143,11 @@ def _selected_items(library, keys):
 
 
 @app.get('/api/library/{library_name}/browse')
-async def browse_library(library_name: str, parent_key: Optional[int] = None, page: int = 1, page_size: int = 60):
+async def browse_library(library_name: str, parent_key: Optional[int] = None, page: int = 1,
+                         page_size: int = 60, q: str = '', episodes: bool = False):
     """Browse movies/shows or seasons of one show without loading all posters."""
     try:
-        cache_key = (library_name, str(parent_key) if parent_key is not None else '')
+        cache_key = (library_name, str(parent_key) if parent_key is not None else 'episodes' if episodes else '')
         cached = _browse_entries_cache.get(cache_key)
         if cached and cached[0] > time.monotonic():
             entries = cached[1]
@@ -157,15 +159,23 @@ async def browse_library(library_name: str, parent_key: Optional[int] = None, pa
                 raise HTTPException(400, 'Only movie and show libraries are supported')
             if parent_key is not None:
                 parent = library.fetchItem(parent_key)
-                if parent.type != 'show' or str(getattr(parent, 'librarySectionID', library.key)) != str(library.key):
-                    raise HTTPException(400, 'Invalid show for this library')
-                entries = parent.seasons()
+                if parent.type not in ('show', 'season') or str(getattr(parent, 'librarySectionID', library.key)) != str(library.key):
+                    raise HTTPException(400, 'Invalid show or season for this library')
+                entries = parent.seasons() if parent.type == 'show' else parent.episodes()
             else:
-                entries = library.all()
+                entries = library.all(libtype='episode') if episodes and library.type == 'show' else library.all()
             entries = [{'key': str(item.ratingKey), 'title': item.title, 'type': item.type,
-                        'year': getattr(item, 'year', None), 'index': getattr(item, 'index', None)}
+                        'year': getattr(item, 'year', None), 'index': getattr(item, 'index', None),
+                        'series': getattr(item, 'grandparentTitle', None),
+                        'season': getattr(item, 'parentIndex', None)}
                        for item in entries]
             _browse_entries_cache[cache_key] = (time.monotonic() + 180, entries)
+        if q.strip():
+            needle = q.strip().casefold()
+            entries = [entry for entry in entries if needle in entry['title'].casefold() or
+                       needle in (entry.get('series') or '').casefold() or
+                       needle in str(entry.get('year') or '') or
+                       (entry['type'] == 'season' and needle in f"staffel {entry.get('index')}")]
         page_size = max(1, min(page_size, 100))
         page = max(1, page)
         start = (page - 1) * page_size
@@ -289,7 +299,7 @@ async def start_processing(request: ProcessRequest):
     """Start overlay processing"""
     global processing_state
 
-    if processing_state["is_processing"] or restore_state["is_restoring"] or imdb_sync_state['is_running']:
+    if processing_state["is_processing"] or restore_state["is_restoring"] or imdb_sync_state['is_running'] or conflict_state['is_running']:
         return {"error": "Processing already in progress"}
 
     if request.rating_keys:
@@ -308,7 +318,7 @@ async def start_processing(request: ProcessRequest):
 @app.post("/api/process-batch")
 async def start_processing_batch(request: ProcessBatchRequest):
     """Process multiple libraries sequentially."""
-    if processing_state["is_processing"] or imdb_sync_state['is_running']:
+    if processing_state["is_processing"] or imdb_sync_state['is_running'] or conflict_state['is_running']:
         return {"error": "Processing already in progress"}
     if not request.library_names:
         return {"error": "No libraries specified"}
@@ -336,7 +346,7 @@ async def restore_originals(request: ProcessRequest):
     """Start restoring original posters from backups"""
     global restore_state
 
-    if restore_state["is_restoring"] or processing_state["is_processing"] or imdb_sync_state['is_running']:
+    if restore_state["is_restoring"] or processing_state["is_processing"] or imdb_sync_state['is_running'] or conflict_state['is_running']:
         return {"error": "Restore already in progress"}
 
     # Start background task
@@ -509,6 +519,23 @@ async def restore_library_background(request: ProcessRequest):
         await broadcast_restore_progress()
 
 
+def _backup_clean_plex_poster(manager, item):
+    """Replace a possibly Kometa-contaminated original after selecting agent artwork."""
+    if item.type == 'episode':
+        if not getattr(item, 'thumb', None):
+            return False
+        original = manager.backup_manager.backup_dir / manager.library_name / 'episodes' / str(item.ratingKey) / 'original.jpg'
+        original.unlink(missing_ok=True)
+        return True
+    poster_url = getattr(item, 'posterUrl', None)
+    if not poster_url:
+        return False
+    return bool(manager.backup_manager.backup_poster(
+        library_name=manager.library_name, item_title=item.title, poster_url=poster_url,
+        item_metadata={'rating_key': item.ratingKey, 'year': getattr(item, 'year', None)},
+        plex_token=manager.plex_token, force=True, year=getattr(item, 'year', None)))
+
+
 async def process_library_background(request: ProcessRequest):
     """Background task for processing library"""
     global processing_state, processing_start_time
@@ -578,6 +605,41 @@ async def process_library_background(request: ProcessRequest):
             processing_state["progress"] = i
             processing_state["current_item"] = item.title
 
+            from src.rating_overlay.kometa_conflicts import (
+                ManualPosterQueue, has_overlay_label, has_kometizarr_overlay, select_agent_poster)
+            manual_queue = ManualPosterQueue()
+            manual_state = manual_queue.state(request.library_name, item)
+            if manual_state == 'waiting':
+                processing_state['skipped'] += 1
+                if request.record_results:
+                    processing_state['item_results'][str(item.ratingKey)] = 'wartet auf manuelles Plex-Poster'
+                await broadcast_progress()
+                continue
+            if manual_state == 'changed':
+                if not _backup_clean_plex_poster(manager, item):
+                    processing_state['skipped'] += 1
+                    if request.record_results:
+                        processing_state['item_results'][str(item.ratingKey)] = 'manuelles Plex-Poster konnte nicht gesichert werden'
+                    await broadcast_progress()
+                    continue
+                manual_queue.remove(request.library_name, item)
+            kometa_label = has_overlay_label(item)
+            already_processed = has_kometizarr_overlay(manager.backup_manager, request.library_name, item)
+            needs_reset = kometa_label and (request.reset_kometa or (
+                not already_processed and _load_settings()['kometa_conflicts'].get('auto_reset', False)))
+            if kometa_label and not already_processed and not needs_reset:
+                processing_state['skipped'] += 1
+                if request.record_results:
+                    processing_state['item_results'][str(item.ratingKey)] = 'Kometa-Konflikt: Reset erforderlich'
+                await broadcast_progress()
+                continue
+            if needs_reset and (not select_agent_poster(item) or not _backup_clean_plex_poster(manager, item)):
+                processing_state['skipped'] += 1
+                if request.record_results:
+                    processing_state['item_results'][str(item.ratingKey)] = 'kein sauberes Agent-Poster gefunden'
+                await broadcast_progress()
+                continue
+
             # Determine positioning mode
             # 1. If badge_positions provided, use 4-badge mode
             # 2. Otherwise, use legacy unified badge with position (string or dict)
@@ -599,6 +661,11 @@ async def process_library_background(request: ProcessRequest):
             elif result:
                 processing_state["success"] += 1
                 _invalidate_browse_poster(request.library_name, item.ratingKey)
+                if kometa_label:
+                    try:
+                        item.removeLabel('Overlay')
+                    except Exception:
+                        logger.exception('Could not remove Kometa Overlay label for %s', item.ratingKey)
                 if imdb_cache:
                     imdb_id = manager._extract_imdb_id(getattr(item, 'guids', []) or [])
                     if imdb_id in manager.imdb_ratings:
@@ -1105,8 +1172,140 @@ fresh_posters_state = {
 }
 
 imdb_sync_state = {'is_running': False, 'phase': 'idle', 'scanned': 0, 'matched': 0,
-                   'changed': 0, 'rendered': 0, 'failed': 0, 'error': None, 'updated_at': None,
+                   'changed': 0, 'pending': 0, 'rendered': 0, 'failed': 0, 'error': None, 'updated_at': None,
                    'logs': []}
+
+conflict_state = {'is_running': False, 'phase': 'idle', 'total': 0, 'resolved': 0,
+                  'skipped': 0, 'failed': 0, 'error': None, 'results': {}}
+
+
+def _scan_kometa_conflicts(library_name):
+    from plexapi.server import PlexServer
+    from src.rating_overlay.backup_manager import PosterBackupManager
+    from src.rating_overlay.kometa_conflicts import ManualPosterQueue, has_overlay_label, has_kometizarr_overlay
+    server = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
+    library = server.library.section(library_name)
+    if library.type not in ('movie', 'show'):
+        raise ValueError('Only movie and series libraries are supported')
+    backups = PosterBackupManager(backup_dir='/backups')
+    queue = ManualPosterQueue()
+    found = {}
+    for kind in (('movie',) if library.type == 'movie' else ('show', 'episode')):
+        try:
+            items = library.search(libtype=kind, label='Overlay')
+        except Exception:
+            items = library.all(libtype=kind)
+        if not items:
+            items = library.all(libtype=kind)
+        for item in items:
+            if has_overlay_label(item):
+                found[str(item.ratingKey)] = item
+    for key in queue.keys(library_name):
+        if key not in found:
+            try:
+                found[key] = library.fetchItem(int(key))
+            except Exception:
+                continue
+    output = []
+    for item in found.values():
+        manual_state = queue.state(library_name, item)
+        pending = manual_state != 'none'
+        label = has_overlay_label(item)
+        if not label and not pending:
+            continue
+        output.append({'key': str(item.ratingKey), 'title': item.title,
+                       'type': item.type, 'year': getattr(item, 'year', None),
+                       'series': getattr(item, 'grandparentTitle', None),
+                       'season': getattr(item, 'parentIndex', None),
+                       'episode': getattr(item, 'index', None),
+                       'pending_manual': manual_state == 'waiting', 'manual_ready': manual_state == 'changed',
+                       'has_label': label,
+                       'has_kometizarr_overlay': has_kometizarr_overlay(backups, library_name, item)})
+    return sorted(output, key=lambda entry: (entry['series'] or entry['title'], entry['season'] or 0, entry['episode'] or 0))
+
+
+@app.get('/api/kometa/conflicts')
+async def get_kometa_conflicts(library_name: str):
+    try:
+        return {'items': await asyncio.to_thread(_scan_kometa_conflicts, library_name)}
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get('/api/kometa/conflicts/status')
+async def get_kometa_conflict_status():
+    return conflict_state
+
+
+class ConflictAction(BaseModel):
+    library_name: str
+    rating_keys: List[str]
+    action: str
+
+
+@app.post('/api/kometa/conflicts/action')
+async def act_on_kometa_conflicts(request: ConflictAction):
+    if request.action not in ('reset_render', 'remove_label') or not 0 < len(request.rating_keys) <= 250:
+        raise HTTPException(400, 'Select 1–250 items and a supported action')
+    if conflict_state['is_running'] or processing_state['is_processing'] or imdb_sync_state['is_running'] or restore_state['is_restoring']:
+        raise HTTPException(409, 'Another run is already active')
+    conflict_state.update(is_running=True, phase='Starting', total=len(request.rating_keys),
+                          resolved=0, skipped=0, failed=0, error=None, results={})
+    asyncio.create_task(_run_kometa_action(request))
+    return {'status': 'started'}
+
+
+def _remove_kometa_labels(request):
+    from plexapi.server import PlexServer
+    from src.rating_overlay.kometa_conflicts import ManualPosterQueue, has_overlay_label
+    library = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN')).library.section(request.library_name)
+    queue = ManualPosterQueue()
+    items = _selected_items(library, request.rating_keys)
+    conflict_state['total'] = len(items)
+    for item in items:
+        key = str(item.ratingKey)
+        if not has_overlay_label(item):
+            conflict_state['skipped'] += 1
+            conflict_state['results'][key] = 'kein Overlay-Label'
+            continue
+        try:
+            queue.mark(request.library_name, item)
+            item.removeLabel('Overlay')
+            conflict_state['resolved'] += 1
+            conflict_state['results'][key] = 'Label entfernt · Poster in Plex wechseln'
+        except Exception:
+            queue.remove(request.library_name, item)
+            conflict_state['failed'] += 1
+            conflict_state['results'][key] = 'Label konnte nicht entfernt werden'
+
+
+async def _run_kometa_action(request):
+    try:
+        if request.action == 'remove_label':
+            conflict_state['phase'] = 'Kometa-Label entfernen'
+            await asyncio.to_thread(_remove_kometa_labels, request)
+        else:
+            settings = _load_settings()
+            conflict_state['phase'] = 'Agent-Poster zurücksetzen und Overlay rendern'
+            await process_library_background(ProcessRequest(
+                library_name=request.library_name, rating_keys=request.rating_keys,
+                force=True, reset_kometa=True, record_results=True,
+                badge_style=settings.get('badge_style'), badge_positions=settings.get('badge_positions'),
+                rating_sources=settings.get('rating_sources'), media_overlay=settings.get('media_overlay')))
+            conflict_state['total'] = processing_state['total']
+            conflict_state['resolved'] = processing_state['success']
+            conflict_state['skipped'] = processing_state['skipped']
+            conflict_state['failed'] = processing_state['failed']
+            conflict_state['results'] = processing_state.get('item_results', {})
+            if processing_state.get('error'):
+                raise RuntimeError(processing_state['error'])
+        conflict_state['phase'] = 'Abgeschlossen'
+    except Exception as exc:
+        conflict_state['error'] = str(exc)
+        conflict_state['phase'] = 'Fehlgeschlagen'
+        logger.exception('Kometa conflict action failed')
+    finally:
+        conflict_state['is_running'] = False
 
 
 def _load_settings() -> dict:
@@ -1114,7 +1313,9 @@ def _load_settings() -> dict:
         "cron_normal": {"enabled": False, "libraries": [], "schedule": "0 3 * * *"},
         "cron_force":  {"enabled": False, "libraries": [], "schedule": "0 3 * * 0"},
         "webhook": {"enabled": False, "libraries": []},
-        "imdb_direct": {"enabled": False, "libraries": [], "auto_refresh": False, "hour": 4},
+        "imdb_direct": {"enabled": False, "libraries": [], "auto_fetch": False,
+                        "auto_render": False, "hour": 4},
+        "kometa_conflicts": {"auto_reset": False},
         "media_overlay": {"source": True, "languages": True, "status": False, "label_size_percent": 4,
                            "episode_font_percent": 2.8, "font_percent": 4, "opacity": 180,
                            "source_labels": {"bluray": "BluRay", "prerelease": "PreRelease"},
@@ -1137,6 +1338,12 @@ def _load_settings() -> dict:
         data["webhook"]["libraries"] = [] if not old or old == "__all__" else [old]
     for key, value in defaults.items():
         data.setdefault(key, value)
+    imdb_settings = data['imdb_direct'] or {}
+    if 'auto_refresh' in imdb_settings:
+        old_schedule = bool(imdb_settings.pop('auto_refresh'))
+        imdb_settings.setdefault('auto_fetch', old_schedule)
+        imdb_settings.setdefault('auto_render', old_schedule)
+    data['imdb_direct'] = {**defaults['imdb_direct'], **imdb_settings}
     data['media_overlay'] = {**defaults['media_overlay'], **(data.get('media_overlay') or {})}
     labels = {**defaults['media_overlay']['status_labels'],
               **(data['media_overlay'].get('status_labels') or {})}
@@ -1185,7 +1392,7 @@ class SelectedImdbRequest(BaseModel):
 async def start_selected_imdb(library_name: str, request: SelectedImdbRequest):
     if request.mode not in ('ratings', 'both') or not 0 < len(request.rating_keys) <= 250:
         raise HTTPException(400, 'Select 1–250 items and a valid action')
-    if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring']:
+    if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring'] or conflict_state['is_running']:
         raise HTTPException(409, 'Another run is already active')
     imdb_sync_state.update(is_running=True, library=library_name, phase='Lese Auswahl', scanned=0, matched=0,
                            changed=0, rendered=0, failed=0, error=None, logs=[])
@@ -1263,20 +1470,26 @@ async def _run_selected_imdb(library_name, request):
         imdb_sync_state['is_running'] = False
 
 
+class ImdbSyncRequest(BaseModel):
+    mode: str = 'both'
+
+
 @app.post('/api/imdb-sync')
-async def start_imdb_sync():
+async def start_imdb_sync(request: ImdbSyncRequest):
     settings = _load_settings()
+    if request.mode not in ('ratings', 'both'):
+        raise HTTPException(400, 'Invalid IMDb sync mode')
     if not settings.get('imdb_direct', {}).get('enabled'):
         raise HTTPException(400, 'Enable direct IMDb ratings first')
-    if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring']:
+    if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring'] or conflict_state['is_running']:
         raise HTTPException(409, 'Another run is already active')
     imdb_sync_state.update(is_running=True, library=None, phase='Scanning Plex', scanned=0, matched=0,
-                           changed=0, rendered=0, failed=0, error=None, logs=[])
-    asyncio.create_task(_run_imdb_sync())
+                           changed=0, pending=0, rendered=0, failed=0, error=None, logs=[])
+    asyncio.create_task(_run_imdb_sync(request.mode))
     return {'status': 'started'}
 
 
-async def _run_imdb_sync():
+async def _run_imdb_sync(mode='both'):
     from src.rating_overlay.imdb_cache import ImdbRatingCache
     cache = None
     try:
@@ -1291,6 +1504,7 @@ async def _run_imdb_sync():
             raise ValueError('No Plex items with an IMDb ID found')
         imdb_sync_state['phase'] = 'Downloading IMDb ratings'
         cache = ImdbRatingCache()
+        before = cache.ratings(ids)
         fetched = await asyncio.to_thread(cache.refresh, ids)
         imdb_sync_state['matched'] = len(fetched)
         imdb_sync_state['updated_at'] = cache.updated_at()
@@ -1299,10 +1513,12 @@ async def _run_imdb_sync():
         for name, items in targets.items():
             changed[name] = [key for key, imdb_id in items if imdb_id in fetched and
                              cache.applied(name, key) != (imdb_id, fetched[imdb_id])]
+        imdb_sync_state['changed'] = sum(before[imdb_id] != rating for imdb_id, rating in fetched.items()
+                                         if imdb_id in before)
+        imdb_sync_state['pending'] = sum(len(keys) for keys in changed.values())
         cache.close()
         cache = None
-        imdb_sync_state['changed'] = sum(len(keys) for keys in changed.values())
-        for library_name, keys in changed.items():
+        for library_name, keys in (changed.items() if mode == 'both' else []):
             if not keys:
                 continue
             imdb_sync_state['phase'] = f'Rendering {library_name}'
@@ -1355,7 +1571,7 @@ def _reschedule_cron(settings: dict):
             except Exception as e:
                 logger.error(f"Failed to schedule {key}: {e}")
     imdb = settings.get('imdb_direct') or {}
-    if imdb.get('enabled') and imdb.get('auto_refresh'):
+    if imdb.get('enabled') and (imdb.get('auto_fetch') or imdb.get('auto_render')):
         try:
             scheduler.add_job(_cron_imdb_sync, CronTrigger(hour=int(imdb.get('hour', 4)), minute=0),
                               id='imdb_refresh', replace_existing=True)
@@ -1364,12 +1580,12 @@ def _reschedule_cron(settings: dict):
 
 
 async def _cron_imdb_sync():
-    if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring']:
+    if imdb_sync_state['is_running'] or processing_state['is_processing'] or restore_state['is_restoring'] or conflict_state['is_running']:
         logger.info('IMDb automatic refresh skipped: another job is running')
         return
     imdb_sync_state.update(is_running=True, library=None, phase='Scanning Plex', scanned=0, matched=0,
-                           changed=0, rendered=0, failed=0, error=None)
-    await _run_imdb_sync()
+                           changed=0, pending=0, rendered=0, failed=0, error=None, logs=[])
+    await _run_imdb_sync('both' if _load_settings()['imdb_direct'].get('auto_render') else 'ratings')
 
 
 async def _run_libraries_sequentially(libraries: list, force: bool):
@@ -1402,7 +1618,7 @@ async def _run_libraries_sequentially(libraries: list, force: bool):
 
 async def _cron_run_libraries(libraries: list, force: bool = False):
     """Called by APScheduler — starts processing if not already running."""
-    if processing_state["is_processing"] or imdb_sync_state['is_running']:
+    if processing_state["is_processing"] or imdb_sync_state['is_running'] or conflict_state['is_running']:
         logger.info("Cron: skipping, processing already in progress")
         return
     asyncio.create_task(_run_libraries_sequentially(libraries, force))
@@ -1414,7 +1630,7 @@ async def _webhook_queue_worker():
         library_name, rating_key, item_title = await webhook_queue.get()
         try:
             # Wait if processing is already running (e.g. cron or manual run)
-            while processing_state["is_processing"] or imdb_sync_state['is_running']:
+            while processing_state["is_processing"] or imdb_sync_state['is_running'] or conflict_state['is_running']:
                 await asyncio.sleep(2)
             # Load current badge settings so webhook uses same styling as the UI
             settings = _load_settings()
