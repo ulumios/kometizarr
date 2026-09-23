@@ -14,6 +14,7 @@ export default function Conflicts() {
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState({ phase: '', percent: 0, processed: 0, total: 0, skipped: 0 })
   const [page, setPage] = useState(1)
+  const [seriesFolder, setSeriesFolder] = useState(null)
   const pageSize = 60
 
   useEffect(() => {
@@ -73,7 +74,29 @@ export default function Conflicts() {
 
   const visible = useMemo(() => items.filter(item =>
     `${item.title} ${item.series || ''} ${item.year || ''}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [items, query])
-  const pageItems = visible.slice((page - 1) * pageSize, page * pageSize)
+  const grouped = useMemo(() => {
+    if (seriesFolder) return visible.filter(item => item.type === 'episode' && item.series === seriesFolder)
+    const output = visible.filter(item => item.type !== 'episode')
+    const episodes = new Map()
+    visible.filter(item => item.type === 'episode').forEach(item => {
+      const name = item.series || 'Unbekannte Serie'
+      if (!episodes.has(name)) episodes.set(name, [])
+      episodes.get(name).push(item)
+    })
+    episodes.forEach((children, title) => output.push({
+      key: `series:${title}`, type: 'series_group', title, series: title,
+      children, conflict_count: children.length, poster_key: children[0]?.key,
+    }))
+    return output.sort((a, b) => a.title.localeCompare(b.title))
+  }, [visible, seriesFolder])
+  const pageItems = grouped.slice((page - 1) * pageSize, page * pageSize)
+  const keysFor = item => item.type === 'series_group' ? item.children.map(child => child.key) : [item.key]
+  const toggleItem = item => setSelected(previous => {
+    const keys = keysFor(item)
+    const remove = keys.every(key => previous.includes(key))
+    return remove ? previous.filter(key => !keys.includes(key)) : [...new Set([...previous, ...keys])]
+  })
+  useEffect(() => setPage(1), [query, seriesFolder])
 
   const start = async action => {
     setConfirm(null)
@@ -94,7 +117,7 @@ export default function Conflicts() {
       <h2 className="text-lg font-semibold">Kometa-Konflikte</h2>
       <p className="text-sm text-gray-400">Plex-Einträge mit dem Label „Overlay“ und Einträge, bei denen du das Label entfernt hast und noch ein anderes Poster in Plex auswählen musst. Ohne Label lässt sich ein Kometa-Poster nicht zuverlässig erkennen.</p>
       <div className="flex flex-wrap gap-2">{libraries.map(lib => <button key={lib.name}
-        onClick={() => { setLibrary(lib.name); setSelected([]) }}
+        onClick={() => { setLibrary(lib.name); setSelected([]); setSeriesFolder(null); setPage(1) }}
         className={`rounded border px-3 py-2 text-sm ${library === lib.name ? 'border-blue-500 bg-blue-700' : 'border-gray-600 bg-gray-900'}`}>{lib.name}</button>)}</div>
       <div className="flex gap-3"><input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Konflikte durchsuchen…"
         aria-label="Konflikte durchsuchen" className="bg-gray-900 border border-gray-600 rounded px-3 py-2 flex-1 text-sm" />
@@ -105,17 +128,21 @@ export default function Conflicts() {
       </div>}
     </div>
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
-      <div className="flex justify-between mb-4 text-sm"><span>{scanning ? 'Plex wird im Hintergrund geprüft…' : loading ? 'Lade…' : `${visible.length} von ${items.length} Konflikten`}</span>
-        <button onClick={() => setSelected(previous => visible.every(item => previous.includes(item.key)) ? previous.filter(key => !visible.some(item => item.key === key)) : [...new Set([...previous, ...visible.map(item => item.key)])])} className="text-blue-300">Sichtbare auswählen/abwählen</button></div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">{pageItems.map(item => <button key={item.key} onClick={() => setSelected(previous => previous.includes(item.key) ? previous.filter(key => key !== item.key) : [...previous, item.key])}
-        className={`rounded-lg overflow-hidden text-left border ${selected.includes(item.key) ? 'border-blue-500' : 'border-gray-600'}`}>
+      {seriesFolder && <button className="text-blue-300 mb-4 hover:underline" onClick={() => { setSeriesFolder(null); setPage(1); setSelected([]) }}>← Konflikte / {seriesFolder}</button>}
+      <div className="flex justify-between mb-4 text-sm"><span>{loading ? 'Lade…' : seriesFolder ? `${grouped.length} Episodenkonflikte` : `${grouped.length} Filme und Serien mit Konflikten`}</span>
+        <button onClick={() => setSelected(previous => pageItems.flatMap(keysFor).every(key => previous.includes(key)) ? previous.filter(key => !pageItems.flatMap(keysFor).includes(key)) : [...new Set([...previous, ...pageItems.flatMap(keysFor)])])} className="text-blue-300">Sichtbare auswählen/abwählen</button></div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">{pageItems.map(item => <div key={item.key}
+        className={`rounded-lg overflow-hidden text-left border ${keysFor(item).every(key => selected.includes(key)) ? 'border-blue-500' : 'border-gray-600'}`}>
+        <button className="w-full text-left" onClick={() => toggleItem(item)}>
         <div className="relative aspect-[2/3] bg-gray-900"><span className="absolute inset-0 flex items-center justify-center text-xs">Kein Poster</span>
-          <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${item.key}?v=${posterVersion}`} alt="" className="absolute inset-0 w-full h-full object-cover" onError={e => { e.currentTarget.style.display = 'none' }} />
-          <span className="absolute top-2 right-2 bg-gray-950/90 px-2 rounded">{selected.includes(item.key) ? '✓' : '○'}</span></div>
-        <div className="p-2 text-sm"><div className="truncate">{item.series && `${item.series} · `}{item.title}</div>
-          <div className="text-xs text-amber-300">{item.pending_manual ? 'Wartet auf neues Plex-Poster' : item.manual_ready ? 'Neues Plex-Poster erkannt · bereit' : item.has_kometizarr_overlay ? 'Kometa-Label + Kometizarr-Overlay' : 'Kometa-Label'}</div></div>
-      </button>)}</div>
-      {visible.length > pageSize && <div className="flex gap-4 mt-5"><button disabled={page === 1} onClick={() => setPage(page - 1)}>← Zurück</button><span>Seite {page} / {Math.ceil(visible.length / pageSize)}</span><button disabled={page * pageSize >= visible.length} onClick={() => setPage(page + 1)}>Weiter →</button></div>}
+          <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${item.poster_key || item.key}?v=${posterVersion}`} alt="" className="absolute inset-0 w-full h-full object-cover" onError={e => { e.currentTarget.style.display = 'none' }} />
+          <span className="absolute top-2 right-2 bg-gray-950/90 px-2 rounded">{keysFor(item).every(key => selected.includes(key)) ? '✓' : '○'}</span></div>
+        <div className="p-2 text-sm"><div className="truncate">{item.type !== 'series_group' && item.series && `${item.series} · `}{item.title}</div>
+          <div className="text-xs text-amber-300">{item.type === 'series_group' ? `${item.conflict_count} Episodenkonflikte` : item.pending_manual ? 'Wartet auf neues Plex-Poster' : item.manual_ready ? 'Neues Plex-Poster erkannt · bereit' : item.has_kometizarr_overlay ? 'Kometa-Label + Kometizarr-Overlay' : 'Kometa-Label'}</div></div>
+        </button>
+        {item.type === 'series_group' && <button className="px-2 pb-2 text-xs text-blue-300 hover:underline" onClick={() => { setSeriesFolder(item.series); setPage(1); setSelected([]) }}>Episoden anzeigen →</button>}
+      </div>)}</div>
+      {grouped.length > pageSize && <div className="flex gap-4 mt-5"><button disabled={page === 1} onClick={() => setPage(page - 1)}>← Zurück</button><span>Seite {page} / {Math.ceil(grouped.length / pageSize)}</span><button disabled={page * pageSize >= grouped.length} onClick={() => setPage(page + 1)}>Weiter →</button></div>}
     </div>
     {error && <p role="alert" className="text-red-300">{error}</p>}
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-3">
