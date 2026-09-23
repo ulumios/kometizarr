@@ -4,7 +4,6 @@ import Collections from './components/Collections'
 import ProcessingProgress from './components/ProcessingProgress'
 import Settings from './components/Settings'
 import LibraryBrowser from './components/LibraryBrowser'
-import Conflicts from './components/Conflicts'
 import Tasks from './components/Tasks'
 
 function App() {
@@ -126,12 +125,6 @@ function App() {
                   🎞️ Bibliotheken
                 </button>
                 <button
-                  onClick={() => setActiveTab('conflicts')}
-                  className={`py-4 px-2 border-b-2 font-medium text-sm transition ${activeTab === 'conflicts' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-300'}`}
-                >
-                  ⚠️ Konflikte
-                </button>
-                <button
                   onClick={() => setActiveTab('collections')}
                   className={`py-4 px-2 border-b-2 font-medium text-sm transition ${
                     activeTab === 'collections'
@@ -170,8 +163,6 @@ function App() {
               />
             ) : activeTab === 'browser' ? (
               <LibraryBrowser onStartProcessing={() => { setProgressData(null); setShowProgressBanner(true); setProcessing(true) }} />
-            ) : activeTab === 'conflicts' ? (
-              <Conflicts />
             ) : activeTab === 'tasks' ? (
               <Tasks />
             ) : activeTab === 'collections' ? (

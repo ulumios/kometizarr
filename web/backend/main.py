@@ -35,12 +35,13 @@ _browse_image_cache = {}
 _library_index_scans = {}
 
 
-def _read_library_index(library_name, parent_key, episodes, q, page, page_size):
+def _read_library_index(library_name, parent_key, episodes, q, page, page_size, conflicts_only=False):
     from src.rating_overlay.media_index import MediaIndex
     index = MediaIndex()
     try:
         updated_at, _ = index.snapshot(library_name, 'browse')
-        result = index.browse(library_name, parent_key, episodes, q, page, page_size) if updated_at else {
+        result = index.browse(library_name, parent_key, episodes, q, page, page_size,
+                              conflicts_only=conflicts_only) if updated_at else {
             'total': 0, 'page': page, 'items': []}
         return updated_at, result
     finally:
@@ -217,11 +218,12 @@ def _selected_items(library, keys):
 
 @app.get('/api/library/{library_name}/browse')
 async def browse_library(library_name: str, parent_key: Optional[int] = None, page: int = 1,
-                         page_size: int = 60, q: str = '', episodes: bool = False, refresh: bool = False):
+                         page_size: int = 60, q: str = '', episodes: bool = False,
+                         refresh: bool = False, conflicts_only: bool = False):
     """Serve indexed Plex media; refresh asynchronously without blocking the UI."""
     try:
         updated_at, result = await asyncio.to_thread(
-            _read_library_index, library_name, parent_key, episodes, q, page, page_size)
+            _read_library_index, library_name, parent_key, episodes, q, page, page_size, conflicts_only)
         scan = _library_index_scans.setdefault(library_name, {'is_running': False, 'error': None})
         if not scan['is_running'] and (refresh or not scan['error']) and (refresh or not updated_at or time.time() - updated_at > 21600):
             scan['is_running'] = True
@@ -491,6 +493,30 @@ async def restore_library_background(request: ProcessRequest):
                             item_backup = backup_manager._get_backup_path(request.library_name, item.title, year=item.year)
                         if item_backup.exists():
                             shutil.rmtree(item_backup)
+                        # Plex has now selected clean agent artwork. Cache that
+                        # exact image immediately as the new render source.
+                        item.reload()
+                        if item.type == 'episode':
+                            series_title = (getattr(item, 'grandparentTitle', None)
+                                            or getattr(item, 'parentTitle', None)
+                                            or 'Unknown Series')
+                            series_year = getattr(item, 'grandparentYear', None)
+                            target = backup_manager._get_backup_path(
+                                request.library_name, series_title, year=series_year)
+                            target.mkdir(parents=True, exist_ok=True)
+                            season_no = int(getattr(item, 'parentIndex', None) or 0)
+                            episode_no = int(getattr(item, 'index', None) or 0)
+                            original_path = target / f'S{season_no:02d}E{episode_no:02d}-poster_original.jpg'
+                            response = server._session.get(server.url(item.thumb), timeout=30)
+                            response.raise_for_status()
+                            original_path.write_bytes(response.content)
+                        else:
+                            backup_manager.backup_poster(
+                                library_name=request.library_name, item_title=item.title,
+                                poster_url=item.posterUrl,
+                                item_metadata={'rating_key': item.ratingKey, 'year': getattr(item, 'year', None)},
+                                plex_token=plex_token, force=True, year=getattr(item, 'year', None))
+                        restore_state["restored"] += 1
 
                 except Exception:
                     logger.exception('Failed to reset Plex poster for %s', item.ratingKey)
@@ -1730,7 +1756,8 @@ async def _run_selected_imdb(library_name, request):
             settings = _load_settings()
             imdb_sync_state['phase'] = 'Poster rendern'
             await process_library_background(ProcessRequest(
-                library_name=library_name, rating_keys=request.rating_keys, force=True,
+                library_name=library_name, rating_keys=request.rating_keys, force=False,
+                poster_source='current',
                 use_imdb_cache=True, record_results=True,
                 badge_style=settings.get('badge_style'), badge_positions=settings.get('badge_positions'),
                 rating_sources={**(settings.get('rating_sources') or DEFAULT_RATING_SOURCES), 'imdb': True},
@@ -1908,7 +1935,7 @@ DEFAULT_BADGE_POSITIONS = {
 DEFAULT_BADGE_STYLE = {
     "individual_badge_size": 9,
     "font_size_multiplier": 1.0,
-    "logo_size_multiplier": 1.0,
+    "logo_size_multiplier": 2.0,
     "rating_color": "#FFFFFF",
     "background_opacity": 215,
     "font_family": "Liberation Sans Bold",

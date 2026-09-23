@@ -59,11 +59,14 @@ class MediaIndex:
             self.db.execute('INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?, NULL)',
                             (library, 'browse', time.time()))
 
-    def browse(self, library, parent_key=None, episodes=False, q='', page=1, page_size=60):
+    def browse(self, library, parent_key=None, episodes=False, q='', page=1, page_size=60,
+               conflicts_only=False):
+        parent_row = None
         if parent_key is not None:
-            parent = self.db.execute('SELECT type FROM media WHERE library=? AND key=?',
-                                     (library, str(parent_key))).fetchone()
-            if not parent or parent[0] not in ('show', 'season'):
+            parent_row = self.db.execute(
+                'SELECT type, title, item_index, series FROM media WHERE library=? AND key=?',
+                (library, str(parent_key))).fetchone()
+            if not parent_row or parent_row[0] not in ('show', 'season'):
                 raise ValueError('Invalid show or season for this library')
             clause, params = 'parent_key=?', [str(parent_key)]
         else:
@@ -74,12 +77,31 @@ class MediaIndex:
             term = '%' + q.strip().lower().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
             where += " AND (lower(title) LIKE ? ESCAPE '\\' OR lower(coalesce(series,'')) LIKE ? ESCAPE '\\' OR CAST(year AS TEXT) LIKE ? OR (type='season' AND lower('staffel ' || item_index) LIKE ? ESCAPE '\\'))"
             params.extend([term] * 4)
-        total = self.db.execute('SELECT count(*) FROM media WHERE ' + where, params).fetchone()[0]
         page_size = max(1, min(page_size, 100))
         page = max(1, page)
-        rows = self.db.execute('SELECT key, title, type, year, item_index, series, season FROM media WHERE ' + where +
-                               ' ORDER BY coalesce(item_index, 0), title COLLATE NOCASE LIMIT ? OFFSET ?',
-                               [*params, page_size, (page - 1) * page_size]).fetchall()
+        select = 'SELECT key, title, type, year, item_index, series, season FROM media WHERE ' + where
+        order = ' ORDER BY coalesce(item_index, 0), title COLLATE NOCASE'
+        if conflicts_only:
+            rows = self.db.execute(select + order, params).fetchall()
+            _, conflicts = self.snapshot(library, 'conflicts')
+            conflicts = conflicts or []
+            keys = {str(row.get('key')) for row in conflicts}
+            series = {row.get('series') for row in conflicts if row.get('series')}
+            seasons = {(row.get('series'), row.get('season')) for row in conflicts
+                       if row.get('series') and row.get('season') is not None}
+            if parent_row and parent_row[0] == 'show':
+                rows = [row for row in rows if str(row[0]) in keys or (parent_row[1], row[4]) in seasons]
+            elif parent_row and parent_row[0] == 'season':
+                rows = [row for row in rows if str(row[0]) in keys]
+            else:
+                rows = [row for row in rows if str(row[0]) in keys or
+                        (row[2] == 'show' and row[1] in series)]
+            total = len(rows)
+            rows = rows[(page - 1) * page_size:page * page_size]
+        else:
+            total = self.db.execute('SELECT count(*) FROM media WHERE ' + where, params).fetchone()[0]
+            rows = self.db.execute(select + order + ' LIMIT ? OFFSET ?',
+                                   [*params, page_size, (page - 1) * page_size]).fetchall()
         return {'total': total, 'page': page, 'items': [dict(zip(
             ('key', 'title', 'type', 'year', 'index', 'series', 'season'), row)) for row in rows]}
 

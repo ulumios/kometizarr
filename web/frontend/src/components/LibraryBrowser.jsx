@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react'
 
+const saved = (() => { try { return JSON.parse(sessionStorage.getItem('kometizarr-browser') || '{}') } catch { return {} } })()
+
 export default function LibraryBrowser({ onStartProcessing }) {
   const [libraries, setLibraries] = useState([])
-  const [library, setLibrary] = useState('')
-  const [parent, setParent] = useState(null)
-  const [trail, setTrail] = useState([])
-  const [page, setPage] = useState(1)
-  const [search, setSearch] = useState('')
+  const [library, setLibrary] = useState(saved.library || '')
+  const [parent, setParent] = useState(saved.parent || null)
+  const [trail, setTrail] = useState(saved.trail || [])
+  const [page, setPage] = useState(saved.page || 1)
+  const [search, setSearch] = useState(saved.search || '')
   const [query, setQuery] = useState('')
-  const [searchEpisodes, setSearchEpisodes] = useState(false)
+  const [searchEpisodes, setSearchEpisodes] = useState(saved.searchEpisodes || false)
+  const [conflictsOnly, setConflictsOnly] = useState(saved.conflictsOnly || false)
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [selected, setSelected] = useState([])
@@ -20,6 +23,12 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [busy, setBusy] = useState(false)
   const [posterVersion, setPosterVersion] = useState(() => Date.now())
   const [imdbJob, setImdbJob] = useState(null)
+
+  useEffect(() => {
+    sessionStorage.setItem('kometizarr-browser', JSON.stringify({
+      library, parent, trail, page, search, searchEpisodes, conflictsOnly,
+    }))
+  }, [library, parent, trail, page, search, searchEpisodes, conflictsOnly])
 
   useEffect(() => {
     const timer = setTimeout(() => { setQuery(search.trim()); setPage(1) }, 250)
@@ -62,6 +71,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
     if (parent) params.set('parent_key', parent.key)
     if (query) params.set('q', query)
     if (searchEpisodes && !parent) params.set('episodes', 'true')
+    if (conflictsOnly) params.set('conflicts_only', 'true')
     if (reload < 0) params.set('refresh', 'true')
     fetch(`/api/library/${encodeURIComponent(library)}/browse?${params}`)
       .then(async r => { const data = await r.json(); if (!r.ok) throw Error(data.detail || 'Library unavailable'); return data })
@@ -69,7 +79,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
       .catch(e => { if (active) setError(e.message) })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [library, parent, page, query, searchEpisodes, reload])
+  }, [library, parent, page, query, searchEpisodes, conflictsOnly, reload])
 
   useEffect(() => {
     if (!indexing) return
@@ -136,9 +146,10 @@ export default function LibraryBrowser({ onStartProcessing }) {
     </div>
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
       <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
-        <span>{loading ? 'Lade Einträge…' : `${total} ${parent?.type === 'show' ? 'Staffeln' : parent?.type === 'season' || searchEpisodes ? 'Episoden' : 'Einträge'}`}</span>
+        <span>{loading ? 'Lade Einträge…' : `${total} ${conflictsOnly ? 'Konflikte' : parent?.type === 'show' ? 'Staffeln' : parent?.type === 'season' || searchEpisodes ? 'Episoden' : 'Einträge'}`}</span>
+        <div className="flex gap-3 items-center"><label className="text-sm flex items-center gap-2"><input type="checkbox" checked={conflictsOnly} onChange={e => { setConflictsOnly(e.target.checked); setPage(1); setSelected([]) }} /> Nur Konflikte</label>
         <button disabled={!items.length} onClick={() => setSelected(previous => allVisible ? previous.filter(k => !items.some(item => item.key === k)) : [...new Set([...previous, ...items.map(item => item.key)])])}
-          className="text-sm text-blue-300 disabled:text-gray-600">{allVisible ? 'Sichtbare abwählen' : 'Sichtbare auswählen'}</button>
+          className="text-sm text-blue-300 disabled:text-gray-600">{allVisible ? 'Sichtbare abwählen' : 'Sichtbare auswählen'}</button></div>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-4">{items.map(item => <div key={item.key} className={`rounded-lg border overflow-hidden ${selected.includes(item.key) ? 'border-blue-500 bg-blue-950/30' : 'border-gray-600 bg-gray-900'}`}>
         <button type="button" onClick={() => toggle(item.key)} aria-label={`${item.title} auswählen`} className="relative block w-full aspect-[2/3] bg-gray-950">

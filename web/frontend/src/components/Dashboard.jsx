@@ -44,7 +44,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     return saved ? JSON.parse(saved) : {
       individual_badge_size: 9,   // Individual badge size (% of poster width)
       font_size_multiplier: 1.0,  // Multiplier for font sizes
-      logo_size_multiplier: 1.0,  // Multiplier for logo within badge
+      logo_size_multiplier: 2.0,  // Existing visual size; displayed as 1.0x in the UI
       rating_color: '#FFFFFF',
       background_opacity: 215,
       font_family: 'Liberation Sans Bold'
@@ -556,7 +556,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                       const badgeSizePercent = badgeStyle.individual_badge_size || 9
                       const badgeWidth = (badgeSizePercent / 100) * 120  // Scale to SVG viewBox
                       const badgeHeight = badgeWidth * 1.4  // 1.4 aspect ratio
-                      const logoMultiplier = badgeStyle.logo_size_multiplier || 1.0
+                      const logoMultiplier = badgeStyle.logo_size_multiplier || 2.0
                       const fontMultiplier = badgeStyle.font_size_multiplier || 1.0
                       // Logo occupies top 60% of badge, scaled by logo_size_multiplier (max 2.0 → full area)
                       const logoAreaHeight = badgeHeight * 0.6 * Math.min(logoMultiplier / 2.0, 1.0)
@@ -603,11 +603,11 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                               transform={`translate(${badgePositions.imdb.x_px != null ? badgePositions.imdb.x_px / 1000 * 120 : badgePositions.imdb.x / 100 * 120}, ${badgePositions.imdb.y_px != null ? badgePositions.imdb.y_px / 1500 * 180 : badgePositions.imdb.y / 100 * 180})`}
                             >
                               <rect width={badgeWidth} height={badgeWidth * 1.04} fill="#0f1116" fillOpacity={(badgeStyle.background_opacity ?? 215) / 255} rx="2" />
-                              <rect x={(badgeWidth - Math.min(badgeWidth * .90 * logoMultiplier, badgeWidth - 2)) / 2}
-                                y={badgeWidth * .08} width={Math.min(badgeWidth * .90 * logoMultiplier, badgeWidth - 2)}
-                                height={badgeWidth * .42} fill="#f5c518" rx="1" />
+                              <rect x={(badgeWidth - Math.min(badgeWidth * .45 * logoMultiplier, badgeWidth - 2)) / 2}
+                                y={badgeWidth * .08} width={Math.min(badgeWidth * .45 * logoMultiplier, badgeWidth - 2)}
+                                height={Math.min(badgeWidth * .21 * logoMultiplier, badgeWidth * .5)} fill="#f5c518" rx="1" />
                               <text x={badgeWidth / 2} y={badgeWidth * .29}
-                                fontSize={badgeWidth * .23 * Math.min(logoMultiplier, 1.15)} fill="#111"
+                                fontSize={badgeWidth * .23 * Math.min(logoMultiplier / 2, 1.4)} fill="#111"
                                 textAnchor="middle" dominantBaseline="middle" fontFamily="sans-serif" fontWeight="bold"
                                 className="pointer-events-none select-none">IMDb</text>
                               <text x={badgeWidth / 2} y={badgeWidth * .78} fontSize={badgeWidth * .31 * (badgeStyle.font_size_multiplier || 1)} fill={badgeStyle.rating_color || '#FFFFFF'} textAnchor="middle" dominantBaseline="middle" fontFamily={fontFamily} fontWeight="bold" className="pointer-events-none select-none">8.4</text>
@@ -829,7 +829,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                       type="range"
                       min="0.5"
                       max="2.0"
-                      step="0.1"
+                      step="0.05"
                       value={badgeStyle.font_size_multiplier}
                       onChange={(e) => updateBadgeStyle('font_size_multiplier', parseFloat(e.target.value))}
                       className="w-full accent-blue-500"
@@ -844,7 +844,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                     <input
                       type="range"
                       min="0.25"
-                      max="1.5"
+                      max="3.0"
                       step="0.1"
                       value={(badgeStyle.logo_size_multiplier || 2.0) / 2}
                       onChange={(e) => updateBadgeStyle('logo_size_multiplier', parseFloat(e.target.value) * 2)}
@@ -918,7 +918,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
                       const defaults = {
                         individual_badge_size: 9,
                         font_size_multiplier: 1.0,
-                        logo_size_multiplier: 1.0,
+                        logo_size_multiplier: 2.0,
                         rating_color: '#FFFFFF',
                         background_opacity: 215,
                         font_family: 'Liberation Sans Bold'
