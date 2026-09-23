@@ -39,6 +39,10 @@ export default function Tasks() {
       <div><span className="font-medium">#{task.id} · {names[task.kind] || task.kind}</span>
         <span className="text-gray-400 ml-2">{task.payload.library_name || task.payload.library || ''}</span>
         {task.error && <p className="text-red-300 text-xs">{task.error}</p>}
+        {task.progress && <div className="mt-2 text-xs text-gray-400" role="progressbar" aria-valuenow={task.progress.done || 0} aria-valuemax={task.progress.total || 1}>
+          {task.progress.done || 0}/{task.progress.total || 0} · {task.progress.current || ''} · {task.progress.failed || 0} fehlgeschlagen
+          <div className="bg-gray-700 rounded h-1.5 mt-1"><div className="bg-blue-500 h-1.5 rounded" style={{ width: `${Math.min(100, 100 * (task.progress.done || 0) / Math.max(1, task.progress.total || 1))}%` }} /></div>
+        </div>}
       </div>
       <div className="text-gray-400">{task.status === 'queued' ? 'Wartet' : task.status === 'running' ? 'Läuft' : task.status === 'completed' ? 'Fertig' : 'Fehlgeschlagen'} · {new Date(task.created_at * 1000).toLocaleString()} {task.attempts > 1 ? `· Versuch ${task.attempts}` : ''}</div>
     </div>)}</div>

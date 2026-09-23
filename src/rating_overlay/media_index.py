@@ -4,6 +4,8 @@ import json
 import logging
 import sqlite3
 import time
+import hashlib
+import os
 from pathlib import Path
 
 from plexapi.exceptions import NotFound
@@ -27,7 +29,38 @@ class MediaIndex:
             CREATE TABLE IF NOT EXISTS snapshots (
                 library TEXT NOT NULL, name TEXT NOT NULL, updated_at REAL NOT NULL,
                 payload TEXT, PRIMARY KEY(library, name));
+            CREATE TABLE IF NOT EXISTS conflicts (
+                library TEXT NOT NULL, key TEXT NOT NULL, title TEXT NOT NULL,
+                type TEXT NOT NULL, show_key TEXT, season_key TEXT,
+                payload TEXT NOT NULL, PRIMARY KEY(library, key));
+            CREATE INDEX IF NOT EXISTS conflicts_parent ON conflicts(library, show_key, season_key);
+            CREATE TABLE IF NOT EXISTS artwork (
+                library TEXT NOT NULL, key TEXT NOT NULL, mime TEXT NOT NULL,
+                thumb TEXT, updated_at REAL NOT NULL, PRIMARY KEY(library, key));
+            CREATE TABLE IF NOT EXISTS origins (
+                library TEXT NOT NULL, key TEXT NOT NULL, source TEXT NOT NULL,
+                poster_id TEXT, updated_at REAL NOT NULL, PRIMARY KEY(library, key));
         ''')
+        # One-time migration of previously recorded JSON conflicts.
+        with self.db:
+            for library, payload in self.db.execute(
+                    "SELECT library,payload FROM snapshots WHERE name='conflicts' AND payload IS NOT NULL"):
+                for entry in json.loads(payload):
+                    key = str(entry.get('key', ''))
+                    if not key:
+                        continue
+                    parent = self.db.execute('SELECT parent_key FROM media WHERE library=? AND key=?',
+                                             (library, key)).fetchone()
+                    season_key = parent[0] if parent and entry.get('type') == 'episode' else None
+                    show_key = None
+                    if season_key:
+                        row = self.db.execute('SELECT parent_key FROM media WHERE library=? AND key=?',
+                                              (library, season_key)).fetchone()
+                        show_key = row[0] if row else None
+                    self.db.execute('INSERT OR IGNORE INTO conflicts VALUES (?, ?, ?, ?, ?, ?, ?)',
+                                    (library, key, entry.get('title', ''), entry.get('type', ''),
+                                     show_key, season_key, json.dumps(entry)))
+            self.db.execute("DELETE FROM snapshots WHERE name='conflicts'")
 
     def close(self):
         self.db.close()
@@ -42,9 +75,9 @@ class MediaIndex:
             self.db.execute('INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?, ?)',
                             (library, name, time.time(), json.dumps(payload) if payload is not None else None))
 
-    def replace_library(self, library, items):
+    def replace_library(self, library, items, progress=None):
         rows = []
-        for item in items:
+        for position, item in enumerate(items, 1):
             try:
                 rows.append((library, str(item.ratingKey), item.title, item.type,
                              str(getattr(item, 'parentRatingKey', '') or '') or None,
@@ -53,9 +86,13 @@ class MediaIndex:
                              getattr(item, 'thumb', None)))
             except NotFound:
                 logger.info('Plex item disappeared while indexing %s: %s', library, item.ratingKey)
+            if progress is not None and (position % 50 == 0 or position == len(items)):
+                progress.update(scanned=position, total=len(items), phase='Speichere Bibliothek')
         with self.db:
             self.db.execute('DELETE FROM media WHERE library=?', (library,))
             self.db.executemany('INSERT INTO media VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', rows)
+            self.db.execute('DELETE FROM conflicts WHERE library=? AND key NOT IN '
+                            '(SELECT key FROM media WHERE library=?)', (library, library))
             self.db.execute('INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?, NULL)',
                             (library, 'browse', time.time()))
 
@@ -82,26 +119,19 @@ class MediaIndex:
         select = 'SELECT key, title, type, year, item_index, series, season FROM media WHERE ' + where
         order = ' ORDER BY coalesce(item_index, 0), title COLLATE NOCASE'
         if conflicts_only:
-            rows = self.db.execute(select + order, params).fetchall()
-            _, conflicts = self.snapshot(library, 'conflicts')
-            conflicts = conflicts or []
-            keys = {str(row.get('key')) for row in conflicts}
-            series = {row.get('series') for row in conflicts if row.get('series')}
-            seasons = {(row.get('series'), row.get('season')) for row in conflicts
-                       if row.get('series') and row.get('season') is not None}
             if parent_row and parent_row[0] == 'show':
-                rows = [row for row in rows if str(row[0]) in keys or (parent_row[1], row[4]) in seasons]
+                where += ' AND (key IN (SELECT key FROM conflicts WHERE library=?) OR key IN (SELECT season_key FROM conflicts WHERE library=? AND show_key=?))'
+                params.extend([library, library, str(parent_key)])
             elif parent_row and parent_row[0] == 'season':
-                rows = [row for row in rows if str(row[0]) in keys]
+                where += ' AND key IN (SELECT key FROM conflicts WHERE library=?)'
+                params.append(library)
             else:
-                rows = [row for row in rows if str(row[0]) in keys or
-                        (row[2] == 'show' and row[1] in series)]
-            total = len(rows)
-            rows = rows[(page - 1) * page_size:page * page_size]
-        else:
-            total = self.db.execute('SELECT count(*) FROM media WHERE ' + where, params).fetchone()[0]
-            rows = self.db.execute(select + order + ' LIMIT ? OFFSET ?',
-                                   [*params, page_size, (page - 1) * page_size]).fetchall()
+                where += ' AND (key IN (SELECT key FROM conflicts WHERE library=?) OR key IN (SELECT show_key FROM conflicts WHERE library=?))'
+                params.extend([library, library])
+            select = 'SELECT key, title, type, year, item_index, series, season FROM media WHERE ' + where
+        total = self.db.execute('SELECT count(*) FROM media WHERE ' + where, params).fetchone()[0]
+        rows = self.db.execute(select + order + ' LIMIT ? OFFSET ?',
+                               [*params, page_size, (page - 1) * page_size]).fetchall()
         return {'total': total, 'page': page, 'items': [dict(zip(
             ('key', 'title', 'type', 'year', 'index', 'series', 'season'), row)) for row in rows]}
 
@@ -114,6 +144,73 @@ class MediaIndex:
         with self.db:
             self.db.execute('UPDATE media SET thumb=? WHERE library=? AND key=?',
                             (thumb, library, str(rating_key)))
+
+    def record_conflict(self, library, item, payload):
+        show_key = str(getattr(item, 'grandparentRatingKey', None) or '') or None
+        season_key = str(getattr(item, 'parentRatingKey', None) or '') or None
+        if item.type == 'show':
+            show_key = str(item.ratingKey)
+        elif item.type == 'season':
+            show_key = season_key
+            season_key = str(item.ratingKey)
+        elif item.type == 'episode' and not show_key and season_key:
+            row = self.db.execute('SELECT parent_key FROM media WHERE library=? AND key=?',
+                                  (library, season_key)).fetchone()
+            show_key = row[0] if row else None
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO conflicts VALUES (?, ?, ?, ?, ?, ?, ?)',
+                            (library, str(item.ratingKey), item.title, item.type,
+                             show_key, season_key, json.dumps(payload)))
+
+    def forget_conflict(self, library, key):
+        with self.db:
+            self.db.execute('DELETE FROM conflicts WHERE library=? AND key=?', (library, str(key)))
+
+    def has_conflict(self, library, key):
+        return self.db.execute('SELECT 1 FROM conflicts WHERE library=? AND key=?',
+                               (library, str(key))).fetchone() is not None
+
+    def conflicts(self, library):
+        return [json.loads(row[0]) for row in self.db.execute(
+            'SELECT payload FROM conflicts WHERE library=? ORDER BY title', (library,))]
+
+    def origin(self, library, key):
+        return self.db.execute('SELECT source, poster_id FROM origins WHERE library=? AND key=?',
+                               (library, str(key))).fetchone()
+
+    def record_origin(self, library, item, source):
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO origins VALUES (?, ?, ?, ?, ?)',
+                            (library, str(item.ratingKey), source,
+                             str(getattr(item, 'thumb', '') or ''), time.time()))
+
+    def artwork_path(self, library, key):
+        digest = hashlib.sha256(f'{library}\0{key}'.encode()).hexdigest()
+        return self.path.parent / 'poster_cache' / f'{digest}.img'
+
+    def cached_artwork(self, library, key):
+        row = self.db.execute('SELECT a.mime,a.thumb,m.thumb FROM artwork a LEFT JOIN media m '
+                              'ON m.library=a.library AND m.key=a.key '
+                              'WHERE a.library=? AND a.key=?', (library, str(key))).fetchone()
+        path = self.artwork_path(library, key)
+        # A Plex scan can replace a thumbnail while the previous bytes still exist.
+        return (path.read_bytes(), row[0]) if row and path.is_file() and (
+            not row[2] or not row[1] or row[1] == row[2]) else None
+
+    def store_artwork(self, library, key, data, mime, thumb=None):
+        path = self.artwork_path(library, key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix('.pending')
+        temporary.write_bytes(data)
+        os.replace(temporary, path)
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO artwork VALUES (?, ?, ?, ?, ?)',
+                            (library, str(key), mime, thumb, time.time()))
+
+    def invalidate_artwork(self, library, key):
+        with self.db:
+            self.db.execute('DELETE FROM artwork WHERE library=? AND key=?', (library, str(key)))
+        self.artwork_path(library, key).unlink(missing_ok=True)
 
     def has_item(self, library, rating_key):
         return self.db.execute('SELECT 1 FROM media WHERE library=? AND key=?',

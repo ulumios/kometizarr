@@ -34,6 +34,9 @@ app = FastAPI(title="Kometizarr API", version="1.2.3")
 # Short-lived image cache; browser entries live in persistent SQLite.
 _browse_image_cache = {}
 _library_index_scans = {}
+_active_task_id = None
+_last_task_progress_write = 0
+_last_saved_result_count = 0
 
 
 def _read_library_index(library_name, parent_key, episodes, q, page, page_size, conflicts_only=False):
@@ -55,16 +58,22 @@ def _refresh_library_index(library_name, progress=None):
     library = PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN')).library.section(library_name)
     if library.type not in ('movie', 'show'):
         raise ValueError('Only movie and show libraries are supported')
-    items = list(library.all())
-    if library.type == 'show':
-        items.extend(library.all(libtype='season'))
-        items.extend(library.all(libtype='episode'))
+    kinds = [None] if library.type == 'movie' else [None, 'season', 'episode']
+    items = []
     if progress is not None:
-        progress['total'] = len(items)
-        progress['scanned'] = len(items)
+        progress.update(phase='Lese Plex', scanned=0, total=0, sections_done=0,
+                        sections_total=len(kinds))
+    for kind in kinds:
+        items.extend(library.all(libtype=kind) if kind else library.all())
+        if progress is not None:
+            progress.update(sections_done=progress['sections_done'] + 1,
+                            scanned=len(items), total=len(items),
+                            phase=f'Plex gelesen: {len(items)} Einträge')
+    if progress is not None:
+        progress.update(phase='Speichere Bibliothek', scanned=0, total=len(items))
     index = MediaIndex()
     try:
-        index.replace_library(library_name, items)
+        index.replace_library(library_name, items, progress)
     finally:
         index.close()
 
@@ -109,11 +118,34 @@ def _invalidate_browse_poster(library, rating_key):
         from src.rating_overlay.media_index import MediaIndex
         index = MediaIndex()
         try:
+            index.invalidate_artwork(library, rating_key)
             index.update_thumb(library, rating_key, None)
         finally:
             index.close()
     except Exception:
         logger.exception('Could not invalidate indexed poster for %s', rating_key)
+
+
+def _cache_backup_artwork(library, item, backups, overlaid):
+    """Serve newly saved image bytes without another Plex request."""
+    try:
+        from src.rating_overlay.media_index import MediaIndex
+        from src.rating_overlay.poster_storage import paths
+        original, overlay = paths(backups, library, item)
+        selected = overlay if overlaid else original
+        if not selected.is_file():
+            return
+        from PIL import Image
+        with Image.open(selected) as image:
+            mime = Image.MIME.get(image.format, 'image/jpeg')
+        index = MediaIndex()
+        try:
+            index.store_artwork(library, item.ratingKey, selected.read_bytes(), mime,
+                                getattr(item, 'thumb', None))
+        finally:
+            index.close()
+    except Exception:
+        logger.exception('Could not cache poster for %s/%s', library, item.ratingKey)
 
 # CORS middleware for frontend
 app.add_middleware(
@@ -180,6 +212,7 @@ class ProcessRequest(BaseModel):
     reset_kometa: bool = False
     poster_source: Optional[str] = None
     operation: Optional[str] = None  # library UI: current_overlay, imdb_overlay, reset_plex
+    completed_keys: List[str] = []
 
 
 class ProcessBatchRequest(BaseModel):
@@ -227,7 +260,7 @@ async def browse_library(library_name: str, parent_key: Optional[int] = None, pa
         updated_at, result = await asyncio.to_thread(
             _read_library_index, library_name, parent_key, episodes, q, page, page_size, conflicts_only)
         scan = _library_index_scans.setdefault(library_name, {'is_running': False, 'error': None})
-        if not scan['is_running'] and (refresh or not scan['error']) and (refresh or not updated_at or time.time() - updated_at > 21600):
+        if not scan['is_running'] and (refresh or (not updated_at and not scan['error'])):
             scan['is_running'] = True
             asyncio.create_task(_run_library_index_scan(library_name))
         result.update(is_running=scan['is_running'], error=scan['error'], updated_at=updated_at)
@@ -251,8 +284,12 @@ async def browse_poster(library_name: str, rating_key: int):
         index = MediaIndex()
         try:
             thumb = index.thumb(library_name, rating_key)
+            disk_image = index.cached_artwork(library_name, rating_key)
         finally:
             index.close()
+        if disk_image:
+            return Response(disk_image[0], media_type=disk_image[1],
+                            headers={'Cache-Control': 'private, max-age=60'})
         server = None
         if not thumb or not thumb.startswith('/') or thumb.startswith('//'):
             from plexapi.server import PlexServer
@@ -284,6 +321,12 @@ async def browse_poster(library_name: str, rating_key: int):
             _browse_image_cache.pop(next(iter(_browse_image_cache)))
         _browse_image_cache[cache_key] = (time.monotonic() + 180, image.content,
                                           image.headers.get('Content-Type', 'image/jpeg'))
+        index = MediaIndex()
+        try:
+            index.store_artwork(library_name, rating_key, image.content,
+                                image.headers.get('Content-Type', 'image/jpeg'), thumb)
+        finally:
+            index.close()
         return Response(image.content, media_type=image.headers.get('Content-Type', 'image/jpeg'),
                         headers={'Cache-Control': 'private, max-age=60'})
     except HTTPException:
@@ -445,7 +488,7 @@ async def restore_library_background(request: ProcessRequest):
 
         from plexapi.server import PlexServer
         from src.rating_overlay.backup_manager import PosterBackupManager
-        from src.rating_overlay.kometa_conflicts import ManualPosterQueue, select_agent_poster
+        from src.rating_overlay.kometa_conflicts import ManualPosterQueue, has_overlay_label, select_agent_poster
 
         plex_url = os.getenv('PLEX_URL')
         plex_token = os.getenv('PLEX_TOKEN')
@@ -479,62 +522,34 @@ async def restore_library_background(request: ProcessRequest):
 
             if request.reset_to_plex:
                 try:
+                    from src.rating_overlay.poster_storage import capture_plex
                     if not select_agent_poster(item):
-                        restore_state["skipped"] += 1
+                        restore_state['skipped'] += 1
                     else:
-                        if item.type == 'episode':
-                            overlay = backup_manager.backup_dir / request.library_name / 'episodes' / str(item.ratingKey) / 'overlay.jpg'
-                        else:
-                            overlay = backup_manager._get_backup_path(request.library_name, item.title, year=item.year) / 'poster_overlay.jpg'
-                        overlay.unlink(missing_ok=True)
-                        # Plex reset removes the complete Kometizarr backup.
-                        if item.type == 'episode':
-                            item_backup = backup_manager.backup_dir / request.library_name / 'episodes' / str(item.ratingKey)
-                        else:
-                            item_backup = backup_manager._get_backup_path(request.library_name, item.title, year=item.year)
-                        if item_backup.exists():
-                            shutil.rmtree(item_backup)
-                        # Plex has now selected clean agent artwork. Cache that
-                        # exact image immediately as the new render source.
-                        item.reload()
-                        if item.type == 'episode':
-                            series_title = (getattr(item, 'grandparentTitle', None)
-                                            or getattr(item, 'parentTitle', None)
-                                            or 'Unknown Series')
-                            series_year = getattr(item, 'grandparentYear', None)
-                            target = backup_manager._get_backup_path(
-                                request.library_name, series_title, year=series_year)
-                            target.mkdir(parents=True, exist_ok=True)
-                            season_no = int(getattr(item, 'parentIndex', None) or 0)
-                            episode_no = int(getattr(item, 'index', None) or 0)
-                            original_path = target / f'S{season_no:02d}E{episode_no:02d}-poster_original.jpg'
-                            overlay_path = target / f'S{season_no:02d}E{episode_no:02d}-poster_overlay.jpg'
-                            original_path.unlink(missing_ok=True)
-                            overlay_path.unlink(missing_ok=True)
-                            response = server._session.get(server.url(item.thumb), timeout=30)
-                            response.raise_for_status()
-                            original_path.write_bytes(response.content)
-                        else:
-                            backup_manager.backup_poster(
-                                library_name=request.library_name, item_title=item.title,
-                                poster_url=item.posterUrl,
-                                item_metadata={'rating_key': item.ratingKey, 'year': getattr(item, 'year', None)},
-                                plex_token=plex_token, force=True, year=getattr(item, 'year', None))
-                        try:
+                        # Selecting artwork in Plex happens first; replacing the backup
+                        # happens only after the new image is fetched and validated.
+                        capture_plex(backup_manager, request.library_name, item, server, plex_token)
+                        old_episode = (backup_manager.backup_dir / request.library_name /
+                                       'episodes' / str(item.ratingKey))
+                        if item.type == 'episode' and old_episode.is_dir():
+                            shutil.rmtree(old_episode)
+                        if has_overlay_label(item):
                             item.removeLabel('Overlay')
-                        except Exception:
-                            logger.exception('Could not remove Kometa Overlay label for %s', item.ratingKey)
                         ManualPosterQueue().remove(request.library_name, item)
+                        _record_poster_origin(request.library_name, item, 'agent')
                         _forget_kometa_conflict(request.library_name, item.ratingKey)
-                        restore_state["restored"] += 1
-
+                        _invalidate_browse_poster(request.library_name, item.ratingKey)
+                        _cache_backup_artwork(request.library_name, item, backup_manager, False)
+                        restore_state['restored'] += 1
                 except Exception:
                     logger.exception('Failed to reset Plex poster for %s', item.ratingKey)
-                    restore_state["failed"] += 1
+                    restore_state['failed'] += 1
             elif item.type == 'episode':
-                episode_dir = backup_manager.backup_dir / request.library_name / 'episodes' / str(item.ratingKey)
-                original = episode_dir / 'original.jpg'
-                overlay = episode_dir / 'overlay.jpg'
+                from src.rating_overlay.poster_storage import paths
+                original, overlay = paths(backup_manager, request.library_name, item)
+                if not original.is_file():
+                    episode_dir = backup_manager.backup_dir / request.library_name / 'episodes' / str(item.ratingKey)
+                    original, overlay = episode_dir / 'original.jpg', episode_dir / 'overlay.jpg'
                 if not original.is_file() or not overlay.is_file():
                     restore_state["skipped"] += 1
                 else:
@@ -607,46 +622,42 @@ async def restore_library_background(request: ProcessRequest):
 
 
 def _backup_clean_plex_poster(manager, item):
-    """Replace a possibly Kometa-contaminated original after selecting agent artwork."""
-    if item.type == 'episode':
-        if not getattr(item, 'thumb', None):
-            return False
-        from PIL import Image
-        series_title = (getattr(item, 'grandparentTitle', None)
-                        or getattr(item, 'parentTitle', None)
-                        or 'Unknown Series')
-        series_year = getattr(item, 'grandparentYear', None)
-        directory = manager.backup_manager._get_backup_path(
-            manager.library_name, series_title, year=series_year)
-        directory.mkdir(parents=True, exist_ok=True)
-        season = int(getattr(item, 'parentIndex', None)
-                     or getattr(item, 'seasonIndex', None) or 0)
-        episode = int(getattr(item, 'index', None) or 0)
-        original = directory / f'S{season:02d}E{episode:02d}-poster_original.jpg'
-        overlay = directory / f'S{season:02d}E{episode:02d}-poster_overlay.jpg'
-        pending = directory / f'.{original.name}.pending'
-        try:
-            response = manager.server._session.get(
-                manager.server.url(item.thumb),
-                headers={'X-Plex-Token': manager.plex_token}, timeout=30)
-            response.raise_for_status()
-            pending.write_bytes(response.content)
-            with Image.open(pending) as image:
-                image.verify()
-            pending.replace(original)
-            overlay.unlink(missing_ok=True)
-            return True
-        except Exception:
-            logger.exception('Could not cache clean Plex episode poster %s', item.ratingKey)
-            pending.unlink(missing_ok=True)
-            return False
-    poster_url = getattr(item, 'posterUrl', None)
-    if not poster_url:
+    """Verify and replace one original without deleting a usable prior image."""
+    from src.rating_overlay.poster_storage import capture_plex
+    try:
+        capture_plex(manager.backup_manager, manager.library_name,
+                     item, manager.server, manager.plex_token)
+        return True
+    except Exception:
+        logger.exception('Could not cache Plex poster %s', item.ratingKey)
         return False
-    return bool(manager.backup_manager.backup_poster(
-        library_name=manager.library_name, item_title=item.title, poster_url=poster_url,
-        item_metadata={'rating_key': item.ratingKey, 'year': getattr(item, 'year', None)},
-        plex_token=manager.plex_token, force=True, year=getattr(item, 'year', None)))
+
+
+def _record_poster_origin(library_name, item, source):
+    from src.rating_overlay.media_index import MediaIndex
+    index = MediaIndex()
+    try:
+        index.record_origin(library_name, item, source)
+    finally:
+        index.close()
+
+
+def _known_poster_origin(library_name, item):
+    from src.rating_overlay.media_index import MediaIndex
+    index = MediaIndex()
+    try:
+        return index.origin(library_name, item.ratingKey)
+    finally:
+        index.close()
+
+
+def _is_recorded_conflict(library_name, item):
+    from src.rating_overlay.media_index import MediaIndex
+    index = MediaIndex()
+    try:
+        return index.has_conflict(library_name, item.ratingKey)
+    finally:
+        index.close()
 
 
 async def process_library_background(request: ProcessRequest):
@@ -707,7 +718,8 @@ async def process_library_background(request: ProcessRequest):
 
         processing_state["total"] = len(all_items)
         if request.record_results:
-            processing_state['item_results'] = {}
+            processing_state['item_results'] = {
+                str(key): 'gerendert' for key in request.completed_keys}
         if imdb_cache:
             imdb_ids = {manager._extract_imdb_id(getattr(item, 'guids', []) or []) for item in all_items}
             manager.imdb_ratings = imdb_cache.ratings(imdb_ids - {None})
@@ -723,6 +735,10 @@ async def process_library_background(request: ProcessRequest):
 
             processing_state["progress"] = i
             processing_state["current_item"] = item.title
+            if str(item.ratingKey) in getattr(request, 'completed_keys', []):
+                processing_state['success'] += 1
+                await broadcast_progress()
+                continue
 
             from src.rating_overlay.kometa_conflicts import (
                 ManualPosterQueue, has_overlay_label, has_kometizarr_overlay, select_agent_poster)
@@ -730,8 +746,16 @@ async def process_library_background(request: ProcessRequest):
             manual_state = manual_queue.state(request.library_name, item)
             current_overlay = request.operation == 'current_overlay'
             imdb_overlay = request.operation == 'imdb_overlay'
+            kometa_label = has_overlay_label(item)
+            if imdb_overlay and (kometa_label or _is_recorded_conflict(request.library_name, item)):
+                await asyncio.to_thread(_remember_kometa_conflict, request.library_name, item)
+                processing_state['skipped'] += 1
+                if request.record_results:
+                    processing_state['item_results'][str(item.ratingKey)] = 'Kometa-Konflikt: übersprungen'
+                await broadcast_progress()
+                continue
             if current_overlay:
-                manual_queue.remove(request.library_name, item)
+                pass
             elif manual_state == 'waiting':
                 processing_state['skipped'] += 1
                 if request.record_results:
@@ -746,19 +770,11 @@ async def process_library_background(request: ProcessRequest):
                     await broadcast_progress()
                     continue
                 manual_queue.remove(request.library_name, item)
-            kometa_label = has_overlay_label(item)
             already_processed = has_kometizarr_overlay(manager.backup_manager, request.library_name, item)
             use_current_plex = request.poster_source == 'current'
             render_force = request.force and not use_current_plex
-            if imdb_overlay and kometa_label:
-                await asyncio.to_thread(_remember_kometa_conflict, request.library_name, item)
-                processing_state['skipped'] += 1
-                if request.record_results:
-                    processing_state['item_results'][str(item.ratingKey)] = 'Kometa-Konflikt: übersprungen'
-                await broadcast_progress()
-                continue
             needs_reset = not current_overlay and kometa_label and (
-                render_force or request.reset_kometa or (
+                request.reset_kometa or (
                     not already_processed and _load_settings()['kometa_conflicts'].get('auto_reset', False)))
             if not current_overlay and kometa_label and not already_processed and not needs_reset:
                 await asyncio.to_thread(_remember_kometa_conflict, request.library_name, item)
@@ -769,23 +785,34 @@ async def process_library_background(request: ProcessRequest):
                 continue
 
             if use_current_plex:
-                if item.type == 'episode':
-                    series_title = (getattr(item, 'grandparentTitle', None)
-                                    or getattr(item, 'parentTitle', None)
-                                    or 'Unknown Series')
-                    series_year = getattr(item, 'grandparentYear', None)
-                    episode_dir = manager.backup_manager._get_backup_path(
-                        request.library_name, series_title, year=series_year)
-                    season_no = int(getattr(item, 'parentIndex', None)
-                                    or getattr(item, 'seasonIndex', None) or 0)
-                    episode_no = int(getattr(item, 'index', None) or 0)
-                    stem = f'S{season_no:02d}E{episode_no:02d}'
-                    (episode_dir / f'{stem}-poster_original.jpg').unlink(missing_ok=True)
-                    (episode_dir / f'{stem}-poster_overlay.jpg').unlink(missing_ok=True)
-                else:
-                    item_dir = manager.backup_manager._get_backup_path(
-                        request.library_name, item.title, year=getattr(item, 'year', None))
-                    shutil.rmtree(item_dir, ignore_errors=True)
+                if not _backup_clean_plex_poster(manager, item):
+                    processing_state['failed'] += 1
+                    if request.record_results:
+                        processing_state['item_results'][str(item.ratingKey)] = 'Plex-Poster konnte nicht gesichert werden'
+                    await broadcast_progress()
+                    continue
+                _record_poster_origin(request.library_name, item,
+                                      'current_with_label' if kometa_label else 'current')
+            if imdb_overlay:
+                from src.rating_overlay.poster_storage import paths
+                original, _ = paths(manager.backup_manager, request.library_name, item)
+                origin = _known_poster_origin(request.library_name, item)
+                if origin and origin[0] == 'current_with_label':
+                    processing_state['skipped'] += 1
+                    if request.record_results:
+                        processing_state['item_results'][str(item.ratingKey)] = 'Unsicheres Original: Kometa-Poster'
+                    await broadcast_progress()
+                    continue
+                had_backup = original.is_file()
+                if not had_backup and not _backup_clean_plex_poster(manager, item):
+                    processing_state['failed'] += 1
+                    if request.record_results:
+                        processing_state['item_results'][str(item.ratingKey)] = 'Original-Backup fehlt'
+                    await broadcast_progress()
+                    continue
+                if not origin:
+                    _record_poster_origin(request.library_name, item,
+                                          'existing_backup' if had_backup else 'current')
             if needs_reset and (not select_agent_poster(item) or not _backup_clean_plex_poster(manager, item)):
                 processing_state['skipped'] += 1
                 if request.record_results:
@@ -814,14 +841,23 @@ async def process_library_background(request: ProcessRequest):
             elif result:
                 processing_state["success"] += 1
                 _invalidate_browse_poster(request.library_name, item.ratingKey)
-                if kometa_label:
+                _cache_backup_artwork(request.library_name, item, manager.backup_manager, True)
+                label_failed = False
+                if kometa_label and not imdb_overlay:
                     try:
                         item.removeLabel('Overlay')
                     except Exception:
                         logger.exception('Could not remove Kometa Overlay label for %s', item.ratingKey)
-                if current_overlay or kometa_label:
+                        label_failed = True
+                if current_overlay and not label_failed:
+                    manual_queue.remove(request.library_name, item)
+                if (current_overlay or kometa_label) and not label_failed:
                     _forget_kometa_conflict(request.library_name, item.ratingKey)
-                if imdb_cache:
+                if label_failed:
+                    processing_state['failed'] += 1
+                    processing_state['success'] -= 1
+                    await asyncio.to_thread(_remember_kometa_conflict, request.library_name, item)
+                if imdb_cache and not label_failed:
                     imdb_id = manager._extract_imdb_id(getattr(item, 'guids', []) or [])
                     if imdb_id in manager.imdb_ratings:
                         imdb_cache.mark_applied(request.library_name, item.ratingKey, imdb_id,
@@ -830,6 +866,7 @@ async def process_library_background(request: ProcessRequest):
                 processing_state["failed"] += 1
             if request.record_results:
                 processing_state['item_results'][str(item.ratingKey)] = (
+                    'Kometa-Tag nicht entfernt' if result is True and label_failed else
                     'gerendert' if result is True else 'übersprungen' if result is None else 'fehlgeschlagen')
 
             # Broadcast progress to all WebSocket connections
@@ -1057,20 +1094,39 @@ async def websocket_progress(websocket: WebSocket):
 
 async def broadcast_progress():
     """Broadcast progress to all connected WebSocket clients"""
-    for connection in active_connections:
+    global _last_task_progress_write, _last_saved_result_count
+    result_count = len(processing_state.get('item_results') or {})
+    if _active_task_id and (time.monotonic() - _last_task_progress_write > 1
+                            or not processing_state.get('is_processing')
+                            or result_count != _last_saved_result_count):
+        await asyncio.to_thread(_with_tasks, 'update_progress', _active_task_id,
+                                {'done': processing_state['progress'], 'total': processing_state['total'],
+                                 'success': processing_state['success'], 'failed': processing_state['failed'],
+                                 'skipped': processing_state['skipped'], 'current': processing_state['current_item']},
+                                processing_state.get('item_results'))
+        _last_task_progress_write = time.monotonic()
+        _last_saved_result_count = result_count
+    for connection in list(active_connections):
         try:
             await connection.send_json(processing_state)
         except:
-            active_connections.remove(connection)
+            if connection in active_connections:
+                active_connections.remove(connection)
 
 
 async def broadcast_restore_progress():
     """Broadcast restore progress to all connected WebSocket clients"""
-    for connection in active_connections:
+    if _active_task_id:
+        await asyncio.to_thread(_with_tasks, 'update_progress', _active_task_id,
+                                {'done': restore_state['progress'], 'total': restore_state['total'],
+                                 'success': restore_state['restored'], 'failed': restore_state['failed'],
+                                 'skipped': restore_state['skipped'], 'current': restore_state['current_item']})
+    for connection in list(active_connections):
         try:
             await connection.send_json(restore_state)
         except:
-            active_connections.remove(connection)
+            if connection in active_connections:
+                active_connections.remove(connection)
 
 
 @app.get("/api/restore/status")
@@ -1340,8 +1396,6 @@ def _remember_kometa_conflict(library_name, item):
     from src.rating_overlay.media_index import MediaIndex
     index = MediaIndex()
     try:
-        _, rows = index.snapshot(library_name, 'conflicts')
-        rows = rows or []
         key = str(item.ratingKey)
         entry = {'key': key, 'title': item.title, 'type': item.type,
                  'year': getattr(item, 'year', None),
@@ -1350,9 +1404,7 @@ def _remember_kometa_conflict(library_name, item):
                  'episode': getattr(item, 'index', None),
                  'has_kometizarr_overlay': False, 'pending_manual': False,
                  'manual_ready': False}
-        rows = [row for row in rows if str(row.get('key')) != key]
-        rows.append(entry)
-        index.save_snapshot(library_name, 'conflicts', rows)
+        index.record_conflict(library_name, item, entry)
         _conflict_scans.pop(library_name, None)
     finally:
         index.close()
@@ -1363,9 +1415,7 @@ def _forget_kometa_conflict(library_name, rating_key):
     from src.rating_overlay.media_index import MediaIndex
     index = MediaIndex()
     try:
-        _, rows = index.snapshot(library_name, 'conflicts')
-        rows = [row for row in (rows or []) if str(row.get('key')) != str(rating_key)]
-        index.save_snapshot(library_name, 'conflicts', rows)
+        index.forget_conflict(library_name, rating_key)
         _conflict_scans.pop(library_name, None)
     finally:
         index.close()
@@ -1387,6 +1437,15 @@ async def _enqueue_task(kind, payload):
 @app.get('/api/tasks')
 async def list_tasks():
     tasks = await asyncio.to_thread(_with_tasks, 'list')
+    if _active_task_id and imdb_sync_state.get('is_running'):
+        for task in tasks:
+            if task['id'] == _active_task_id and task['kind'] in ('imdb', 'selected_imdb'):
+                task['progress'] = {'done': imdb_sync_state.get('scanned', 0),
+                                    'total': imdb_sync_state.get('scanned', 0),
+                                    'percent': imdb_sync_state.get('percent', 0),
+                                    'current': imdb_sync_state.get('phase', ''),
+                                    'failed': imdb_sync_state.get('failed', 0)}
+                break
     for library, state in _library_index_scans.items():
         if state.get('is_running') or state.get('finished_at'):
             total, done = state.get('total', 0), state.get('scanned', 0)
@@ -1399,7 +1458,16 @@ async def list_tasks():
     return {'tasks': tasks}
 
 
+@app.get('/api/tasks/{task_id}/status')
+async def task_status(task_id: int):
+    status = await asyncio.to_thread(_with_tasks, 'get', task_id)
+    if status is None:
+        raise HTTPException(404, 'Task not found')
+    return {'status': status}
+
+
 async def _task_worker():
+    global _active_task_id, _last_saved_result_count
     await asyncio.to_thread(_with_tasks, 'resume')
     while True:
         try:
@@ -1411,22 +1479,29 @@ async def _task_worker():
             if task is None:
                 await asyncio.sleep(2)
                 continue
+            _active_task_id = task['id']
+            _last_saved_result_count = 0
             error = None
             try:
                 kind, payload = task['kind'], task['payload']
                 if kind == 'process':
-                    await process_library_background(ProcessRequest(**payload))
-                    error = processing_state.get('error')
+                    completed = [key for key, result in task['results'].items()
+                                 if result == 'gerendert']
+                    await process_library_background(ProcessRequest(**{
+                        **payload, 'completed_keys': completed, 'record_results': True}))
+                    error = processing_state.get('error') or (
+                        f"{processing_state['failed']} Poster fehlgeschlagen" if processing_state['failed'] else None)
                 elif kind == 'batch':
                     for name in payload['library_names']:
                         options = {key: value for key, value in payload.items() if key != 'library_names'}
                         await process_library_background(ProcessRequest(library_name=name, **options))
-                        if processing_state.get('error'):
-                            error = f"{name}: {processing_state['error']}"
+                        if processing_state.get('error') or processing_state['failed']:
+                            error = f"{name}: {processing_state.get('error') or str(processing_state['failed']) + ' fehlgeschlagen'}"
                             break
                 elif kind == 'restore':
                     await restore_library_background(ProcessRequest(**payload))
-                    error = restore_state.get('error')
+                    error = restore_state.get('error') or (
+                        f"{restore_state['failed']} Poster fehlgeschlagen" if restore_state['failed'] else None)
                 elif kind == 'imdb':
                     imdb_sync_state.update(is_running=True, phase='Lese Plex', scanned=0,
                                            matched=0, changed=0, pending=0, rendered=0,
@@ -1438,7 +1513,8 @@ async def _task_worker():
                                            scanned=0, matched=0, changed=0, rendered=0,
                                            failed=0, error=None, logs=[], percent=0)
                     await _run_selected_imdb(payload['library'], SelectedImdbRequest(**payload['request']))
-                    error = imdb_sync_state.get('error')
+                    error = imdb_sync_state.get('error') or (
+                        f"{imdb_sync_state['failed']} Poster fehlgeschlagen" if imdb_sync_state['failed'] else None)
                 elif kind == 'conflict':
                     conflict_state.update(is_running=True, phase='Startet', total=len(payload['rating_keys']),
                                           resolved=0, skipped=0, failed=0, error=None, results={})
@@ -1455,13 +1531,23 @@ async def _task_worker():
                         error = processing_state.get('error')
                 else:
                     error = f'Unbekannter Auftrag: {kind}'
+                if kind in ('imdb', 'selected_imdb'):
+                    await asyncio.to_thread(_with_tasks, 'update_progress', task['id'],
+                                            {'done': imdb_sync_state.get('scanned', 0),
+                                             'total': imdb_sync_state.get('scanned', 0),
+                                             'percent': imdb_sync_state.get('percent', 0),
+                                             'current': imdb_sync_state.get('phase', ''),
+                                             'failed': imdb_sync_state.get('failed', 0)},
+                                            imdb_sync_state.get('logs'))
             except Exception as exc:
                 error = str(exc)
                 logger.exception('Task %s failed', task['id'])
             await asyncio.to_thread(_with_tasks, 'finish', task['id'], error)
+            _active_task_id = None
         except asyncio.CancelledError:
             raise
         except Exception:
+            _active_task_id = None
             logger.exception('Task worker error')
             await asyncio.sleep(3)
 
@@ -1474,7 +1560,12 @@ async def _run_conflict_scan(library_name):
         def save():
             index = MediaIndex()
             try:
-                index.save_snapshot(library_name, 'conflicts', state['items'])
+                for entry in state['items']:
+                    item = type('ConflictItem', (), {
+                        'ratingKey': entry['key'], 'title': entry['title'],
+                        'type': entry['type'], 'grandparentRatingKey': None,
+                        'parentRatingKey': None})()
+                    index.record_conflict(library_name, item, entry)
             finally:
                 index.close()
         await asyncio.to_thread(save)
@@ -1582,7 +1673,7 @@ async def get_kometa_conflicts(library_name: str, refresh: bool = False):
         def load():
             index = MediaIndex()
             try:
-                return index.snapshot(library_name, 'conflicts')
+                return time.time(), index.conflicts(library_name)
             finally:
                 index.close()
         updated_at, items = await asyncio.to_thread(load)
@@ -1832,7 +1923,8 @@ async def _run_selected_imdb(library_name, request):
             imdb_sync_state['failed'] = processing_state['failed']
             if processing_state.get('error'):
                 raise RuntimeError(processing_state['error'])
-        imdb_sync_state['phase'] = 'Abgeschlossen'
+        imdb_sync_state['phase'] = ('Teilweise fehlgeschlagen' if imdb_sync_state.get('failed')
+                                    else 'Abgeschlossen')
         imdb_sync_state['percent'] = 100
     except Exception as exc:
         imdb_sync_state['error'] = str(exc)
@@ -1895,6 +1987,7 @@ async def _run_imdb_sync(mode='both'):
             imdb_sync_state['phase'] = f'Rendering {library_name}'
             await process_library_background(ProcessRequest(
                 library_name=library_name, rating_keys=keys, force=True,
+                operation='imdb_overlay', use_imdb_cache=True,
                 badge_style=settings.get('badge_style'), badge_positions=settings.get('badge_positions'),
                 rating_sources=settings.get('rating_sources'), media_overlay=settings.get('media_overlay')))
             imdb_sync_state['rendered'] += processing_state['success']

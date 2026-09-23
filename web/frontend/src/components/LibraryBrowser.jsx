@@ -22,6 +22,10 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [confirmReset, setConfirmReset] = useState(false)
   const [busy, setBusy] = useState(false)
   const [posterVersion, setPosterVersion] = useState(() => Date.now())
+  const [posterVersions, setPosterVersions] = useState({})
+  const [pendingJob, setPendingJob] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('kometizarr-browser-job') || 'null') } catch { return null }
+  })
   const [imdbJob, setImdbJob] = useState(null)
 
   useEffect(() => {
@@ -29,6 +33,23 @@ export default function LibraryBrowser({ onStartProcessing }) {
       library, parent, trail, page, search, searchEpisodes, conflictsOnly,
     }))
   }, [library, parent, trail, page, search, searchEpisodes, conflictsOnly])
+
+  useEffect(() => {
+    if (!pendingJob) return undefined
+    const poll = () => fetch(`/api/tasks/${pendingJob.id}/status`).then(r => r.json()).then(task => {
+      if (!['completed', 'failed'].includes(task.status)) return
+      const version = Date.now()
+      setPosterVersions(previous => Object.fromEntries([
+        ...Object.entries(previous), ...pendingJob.keys.map(key => [String(key), version]),
+      ]))
+      setReload(value => value + 1)
+      setPendingJob(null)
+      sessionStorage.removeItem('kometizarr-browser-job')
+    }).catch(() => {})
+    poll()
+    const timer = setInterval(poll, 2000)
+    return () => clearInterval(timer)
+  }, [pendingJob])
 
   useEffect(() => {
     const timer = setTimeout(() => { setQuery(search.trim()); setPage(1) }, 250)
@@ -72,7 +93,6 @@ export default function LibraryBrowser({ onStartProcessing }) {
     if (query) params.set('q', query)
     if (searchEpisodes && !parent) params.set('episodes', 'true')
     if (conflictsOnly) params.set('conflicts_only', 'true')
-    if (reload < 0) params.set('refresh', 'true')
     fetch(`/api/library/${encodeURIComponent(library)}/browse?${params}`)
       .then(async r => { const data = await r.json(); if (!r.ok) throw Error(data.detail || 'Library unavailable'); return data })
       .then(data => { if (active) { setItems(data.items); setTotal(data.total); setIndexing(!!data.is_running); if (data.error) setError(data.error) } })
@@ -83,7 +103,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
 
   useEffect(() => {
     if (!indexing) return
-    const timer = setTimeout(() => setReload(value => value < 0 ? 0 : value + 1), 2500)
+    const timer = setTimeout(() => setReload(value => value + 1), 2500)
     return () => clearTimeout(timer)
   }, [indexing, reload])
 
@@ -107,6 +127,9 @@ export default function LibraryBrowser({ onStartProcessing }) {
       const data = await response.json()
       if (!response.ok || data.error || data.status !== 'started') throw Error(data.error || data.detail || 'Could not start')
       setConfirmReset(false)
+      const job = { id: data.task_id, keys: [...selected] }
+      sessionStorage.setItem('kometizarr-browser-job', JSON.stringify(job))
+      setPendingJob(job)
       onStartProcessing()
     } catch (e) { setError(e.message) }
     finally { setBusy(false) }
@@ -123,6 +146,9 @@ export default function LibraryBrowser({ onStartProcessing }) {
       })
       const data = await response.json()
       if (!response.ok) throw Error(data.detail || 'IMDb-Lauf konnte nicht gestartet werden')
+      const job = { id: data.task_id, keys: [...selected] }
+      sessionStorage.setItem('kometizarr-browser-job', JSON.stringify(job))
+      setPendingJob(job)
       setImdbJob({ is_running: false, phase: `Aufgabe #${data.task_id} wartet`, library, logs: [] })
     } catch (e) { setError(e.message) }
     finally { setBusy(false) }
@@ -141,7 +167,6 @@ export default function LibraryBrowser({ onStartProcessing }) {
         {!parent && libraries.find(lib => lib.name === library)?.type === 'show' && <label className="text-sm flex items-center gap-2">
           <input type="checkbox" checked={searchEpisodes} onChange={e => { setSearchEpisodes(e.target.checked); setPage(1); setSelected([]) }} /> Episoden anzeigen
         </label>}
-        <button type="button" onClick={() => setReload(-1)} disabled={indexing} className="bg-gray-700 rounded px-3 py-2 text-sm disabled:opacity-40">Mit Plex abgleichen</button>
       </div>
       {indexing && <p className="text-sm text-blue-300 mt-2">Bibliothek wird im Hintergrund indexiert…</p>}
     </div>
@@ -155,7 +180,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
       <div className={`grid grid-cols-2 sm:grid-cols-3 gap-4 ${episodeView ? 'lg:grid-cols-3 xl:grid-cols-4' : 'lg:grid-cols-5 xl:grid-cols-6'}`}>{items.map(item => <div key={item.key} className={`rounded-lg border overflow-hidden ${selected.includes(item.key) ? 'border-blue-500 bg-blue-950/30' : 'border-gray-600 bg-gray-900'}`}>
         <button type="button" onClick={() => toggle(item.key)} aria-label={`${item.title} auswählen`} className={`relative block w-full bg-gray-950 ${item.type === 'episode' ? 'aspect-video' : 'aspect-[2/3]'}`}>
           <span className="absolute inset-0 flex items-center justify-center text-xs text-gray-500 p-3">Kein Poster verfügbar</span>
-          <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${encodeURIComponent(item.key)}?v=${posterVersion}`} alt="" className="absolute inset-0 w-full h-full object-cover" onError={event => { event.currentTarget.style.display = 'none' }} />
+          <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${encodeURIComponent(item.key)}?v=${posterVersions[String(item.key)] || posterVersion}`} alt="" className="absolute inset-0 w-full h-full object-cover" onLoad={event => { event.currentTarget.style.display = '' }} onError={event => { event.currentTarget.style.display = 'none' }} />
           <span className={`absolute top-2 right-2 rounded px-2 py-1 text-sm ${selected.includes(item.key) ? 'bg-blue-600 text-white' : 'bg-gray-900/90 text-gray-200'}`}>{selected.includes(item.key) ? '✓' : '○'}</span>
         </button>
         <div className="p-2.5"><div className="text-sm truncate" title={item.title}>{item.type === 'season' ? `Staffel ${item.index ?? '–'} · ` : item.type === 'episode' ? `${item.series ? `${item.series} · ` : ''}S${String(item.season ?? 0).padStart(2, '0')}E${String(item.index ?? 0).padStart(2, '0')} · ` : ''}{item.title} {item.year ? `(${item.year})` : ''}</div>

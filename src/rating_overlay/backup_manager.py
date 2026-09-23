@@ -179,18 +179,8 @@ class PosterBackupManager:
             response = requests.get(download_url, timeout=30)
             response.raise_for_status()
 
-            # Save original
-            with open(original_path, 'wb') as f:
-                f.write(response.content)
-
-            # Verify it's a valid image
-            try:
-                img = Image.open(original_path)
-                img.verify()
-            except Exception as e:
-                logger.error(f"Downloaded file is not a valid image: {e}")
-                original_path.unlink()
-                return None
+            from src.rating_overlay.poster_storage import replace_image
+            replace_image(original_path, response.content)
 
             # Save metadata
             metadata = {
@@ -206,8 +196,6 @@ class PosterBackupManager:
 
         except Exception as e:
             logger.error(f"✗ Failed to backup poster for '{item_title}': {e}")
-            if original_path.exists():
-                original_path.unlink()  # Clean up partial download
             return None
 
     def get_original_poster(self, library_name: str, item_title: str, year: Optional[int] = None) -> Optional[Path]:

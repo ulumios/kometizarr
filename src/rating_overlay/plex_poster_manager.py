@@ -331,22 +331,13 @@ class PlexPosterManager:
         try:
             from PIL import Image
             import requests
+            from src.rating_overlay.poster_storage import paths, replace_image
             key = str(episode.ratingKey)
-            series_title = (getattr(episode, 'grandparentTitle', None)
-                            or getattr(episode, 'parentTitle', None)
-                            or 'Unknown Series')
-            series_year = getattr(episode, 'grandparentYear', None)
-            backup = self.backup_manager._get_backup_path(
-                self.library_name, series_title, year=series_year)
+            original, rendered = paths(self.backup_manager, self.library_name, episode)
+            backup = original.parent
             backup.mkdir(parents=True, exist_ok=True)
-            season_no = int(getattr(episode, 'parentIndex', None)
-                            or getattr(episode, 'seasonIndex', None) or 0)
-            episode_no = int(getattr(episode, 'index', None) or 0)
-            stem = f'S{season_no:02d}E{episode_no:02d}'
-            original = backup / f'{stem}-poster_original.jpg'
-            rendered = backup / f'{stem}-poster_overlay.jpg'
-            pending = backup / 'overlay.pending.jpg'
-            canvas = backup / 'canvas.pending.jpg'
+            pending = backup / f'.{key}-overlay.pending.jpg'
+            canvas = backup / f'.{key}-canvas.pending.jpg'
             if rendered.exists() and not force:
                 return None
             if not original.exists():
@@ -360,9 +351,7 @@ class PlexPosterManager:
                     timeout=30,
                 )
                 response.raise_for_status()
-                original.write_bytes(response.content)
-                with Image.open(original) as img:
-                    img.verify()
+                replace_image(original, response.content)
             ratings = self._extract_plex_ratings(episode)
             imdb_id = self._extract_imdb_id(getattr(episode, 'guids', []) or [])
             if imdb_id in self.imdb_ratings:
