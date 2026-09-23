@@ -92,6 +92,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const goBack = () => { setParent(trail.at(-1) || null); setTrail(previous => previous.slice(0, -1)); setSearch(''); setPage(1); setSelected([]) }
   const toggle = key => setSelected(previous => previous.includes(key) ? previous.filter(k => k !== key) : [...previous, key])
   const allVisible = items.length > 0 && items.every(item => selected.includes(item.key))
+  const episodeView = parent?.type === 'season' || (searchEpisodes && items.some(item => item.type === 'episode'))
   const launch = async reset => {
     if (!selected.length || busy) return
     setBusy(true)
@@ -151,8 +152,8 @@ export default function LibraryBrowser({ onStartProcessing }) {
         <button disabled={!items.length} onClick={() => setSelected(previous => allVisible ? previous.filter(k => !items.some(item => item.key === k)) : [...new Set([...previous, ...items.map(item => item.key)])])}
           className="text-sm text-blue-300 disabled:text-gray-600">{allVisible ? 'Sichtbare abwählen' : 'Sichtbare auswählen'}</button></div>
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-4">{items.map(item => <div key={item.key} className={`rounded-lg border overflow-hidden ${selected.includes(item.key) ? 'border-blue-500 bg-blue-950/30' : 'border-gray-600 bg-gray-900'}`}>
-        <button type="button" onClick={() => toggle(item.key)} aria-label={`${item.title} auswählen`} className="relative block w-full aspect-[2/3] bg-gray-950">
+      <div className={`grid grid-cols-2 sm:grid-cols-3 gap-4 ${episodeView ? 'lg:grid-cols-3 xl:grid-cols-4' : 'lg:grid-cols-5 xl:grid-cols-6'}`}>{items.map(item => <div key={item.key} className={`rounded-lg border overflow-hidden ${selected.includes(item.key) ? 'border-blue-500 bg-blue-950/30' : 'border-gray-600 bg-gray-900'}`}>
+        <button type="button" onClick={() => toggle(item.key)} aria-label={`${item.title} auswählen`} className={`relative block w-full bg-gray-950 ${item.type === 'episode' ? 'aspect-video' : 'aspect-[2/3]'}`}>
           <span className="absolute inset-0 flex items-center justify-center text-xs text-gray-500 p-3">Kein Poster verfügbar</span>
           <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${encodeURIComponent(item.key)}?v=${posterVersion}`} alt="" className="absolute inset-0 w-full h-full object-cover" onError={event => { event.currentTarget.style.display = 'none' }} />
           <span className={`absolute top-2 right-2 rounded px-2 py-1 text-sm ${selected.includes(item.key) ? 'bg-blue-600 text-white' : 'bg-gray-900/90 text-gray-200'}`}>{selected.includes(item.key) ? '✓' : '○'}</span>
