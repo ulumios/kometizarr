@@ -179,6 +179,7 @@ class ProcessRequest(BaseModel):
     record_results: bool = False
     reset_kometa: bool = False
     poster_source: Optional[str] = None
+    operation: Optional[str] = None  # library UI: current_overlay, imdb_overlay, reset_plex
 
 
 class ProcessBatchRequest(BaseModel):
@@ -444,6 +445,7 @@ async def restore_library_background(request: ProcessRequest):
 
         from plexapi.server import PlexServer
         from src.rating_overlay.backup_manager import PosterBackupManager
+        from src.rating_overlay.kometa_conflicts import ManualPosterQueue, select_agent_poster
 
         plex_url = os.getenv('PLEX_URL')
         plex_token = os.getenv('PLEX_TOKEN')
@@ -477,11 +479,9 @@ async def restore_library_background(request: ProcessRequest):
 
             if request.reset_to_plex:
                 try:
-                    original = next((p for p in item.posters() if 'upload' not in p.ratingKey), None)
-                    if original is None:
+                    if not select_agent_poster(item):
                         restore_state["skipped"] += 1
                     else:
-                        original.select()
                         if item.type == 'episode':
                             overlay = backup_manager.backup_dir / request.library_name / 'episodes' / str(item.ratingKey) / 'overlay.jpg'
                         else:
@@ -508,6 +508,9 @@ async def restore_library_background(request: ProcessRequest):
                             season_no = int(getattr(item, 'parentIndex', None) or 0)
                             episode_no = int(getattr(item, 'index', None) or 0)
                             original_path = target / f'S{season_no:02d}E{episode_no:02d}-poster_original.jpg'
+                            overlay_path = target / f'S{season_no:02d}E{episode_no:02d}-poster_overlay.jpg'
+                            original_path.unlink(missing_ok=True)
+                            overlay_path.unlink(missing_ok=True)
                             response = server._session.get(server.url(item.thumb), timeout=30)
                             response.raise_for_status()
                             original_path.write_bytes(response.content)
@@ -517,6 +520,12 @@ async def restore_library_background(request: ProcessRequest):
                                 poster_url=item.posterUrl,
                                 item_metadata={'rating_key': item.ratingKey, 'year': getattr(item, 'year', None)},
                                 plex_token=plex_token, force=True, year=getattr(item, 'year', None))
+                        try:
+                            item.removeLabel('Overlay')
+                        except Exception:
+                            logger.exception('Could not remove Kometa Overlay label for %s', item.ratingKey)
+                        ManualPosterQueue().remove(request.library_name, item)
+                        _forget_kometa_conflict(request.library_name, item.ratingKey)
                         restore_state["restored"] += 1
 
                 except Exception:
@@ -602,9 +611,35 @@ def _backup_clean_plex_poster(manager, item):
     if item.type == 'episode':
         if not getattr(item, 'thumb', None):
             return False
-        original = manager.backup_manager.backup_dir / manager.library_name / 'episodes' / str(item.ratingKey) / 'original.jpg'
-        original.unlink(missing_ok=True)
-        return True
+        from PIL import Image
+        series_title = (getattr(item, 'grandparentTitle', None)
+                        or getattr(item, 'parentTitle', None)
+                        or 'Unknown Series')
+        series_year = getattr(item, 'grandparentYear', None)
+        directory = manager.backup_manager._get_backup_path(
+            manager.library_name, series_title, year=series_year)
+        directory.mkdir(parents=True, exist_ok=True)
+        season = int(getattr(item, 'parentIndex', None)
+                     or getattr(item, 'seasonIndex', None) or 0)
+        episode = int(getattr(item, 'index', None) or 0)
+        original = directory / f'S{season:02d}E{episode:02d}-poster_original.jpg'
+        overlay = directory / f'S{season:02d}E{episode:02d}-poster_overlay.jpg'
+        pending = directory / f'.{original.name}.pending'
+        try:
+            response = manager.server._session.get(
+                manager.server.url(item.thumb),
+                headers={'X-Plex-Token': manager.plex_token}, timeout=30)
+            response.raise_for_status()
+            pending.write_bytes(response.content)
+            with Image.open(pending) as image:
+                image.verify()
+            pending.replace(original)
+            overlay.unlink(missing_ok=True)
+            return True
+        except Exception:
+            logger.exception('Could not cache clean Plex episode poster %s', item.ratingKey)
+            pending.unlink(missing_ok=True)
+            return False
     poster_url = getattr(item, 'posterUrl', None)
     if not poster_url:
         return False
@@ -693,13 +728,17 @@ async def process_library_background(request: ProcessRequest):
                 ManualPosterQueue, has_overlay_label, has_kometizarr_overlay, select_agent_poster)
             manual_queue = ManualPosterQueue()
             manual_state = manual_queue.state(request.library_name, item)
-            if manual_state == 'waiting':
+            current_overlay = request.operation == 'current_overlay'
+            imdb_overlay = request.operation == 'imdb_overlay'
+            if current_overlay:
+                manual_queue.remove(request.library_name, item)
+            elif manual_state == 'waiting':
                 processing_state['skipped'] += 1
                 if request.record_results:
                     processing_state['item_results'][str(item.ratingKey)] = 'wartet auf manuelles Plex-Poster'
                 await broadcast_progress()
                 continue
-            if manual_state == 'changed':
+            if not current_overlay and manual_state == 'changed':
                 if not _backup_clean_plex_poster(manager, item):
                     processing_state['skipped'] += 1
                     if request.record_results:
@@ -711,9 +750,17 @@ async def process_library_background(request: ProcessRequest):
             already_processed = has_kometizarr_overlay(manager.backup_manager, request.library_name, item)
             use_current_plex = request.poster_source == 'current'
             render_force = request.force and not use_current_plex
-            needs_reset = kometa_label and (render_force or request.reset_kometa or (
-                not already_processed and _load_settings()['kometa_conflicts'].get('auto_reset', False)))
-            if kometa_label and not already_processed and not needs_reset:
+            if imdb_overlay and kometa_label:
+                await asyncio.to_thread(_remember_kometa_conflict, request.library_name, item)
+                processing_state['skipped'] += 1
+                if request.record_results:
+                    processing_state['item_results'][str(item.ratingKey)] = 'Kometa-Konflikt: übersprungen'
+                await broadcast_progress()
+                continue
+            needs_reset = not current_overlay and kometa_label and (
+                render_force or request.reset_kometa or (
+                    not already_processed and _load_settings()['kometa_conflicts'].get('auto_reset', False)))
+            if not current_overlay and kometa_label and not already_processed and not needs_reset:
                 await asyncio.to_thread(_remember_kometa_conflict, request.library_name, item)
                 processing_state['skipped'] += 1
                 if request.record_results:
@@ -772,6 +819,8 @@ async def process_library_background(request: ProcessRequest):
                         item.removeLabel('Overlay')
                     except Exception:
                         logger.exception('Could not remove Kometa Overlay label for %s', item.ratingKey)
+                if current_overlay or kometa_label:
+                    _forget_kometa_conflict(request.library_name, item.ratingKey)
                 if imdb_cache:
                     imdb_id = manager._extract_imdb_id(getattr(item, 'guids', []) or [])
                     if imdb_id in manager.imdb_ratings:
@@ -1309,6 +1358,19 @@ def _remember_kometa_conflict(library_name, item):
         index.close()
 
 
+def _forget_kometa_conflict(library_name, rating_key):
+    """Remove a resolved conflict from the persistent local snapshot."""
+    from src.rating_overlay.media_index import MediaIndex
+    index = MediaIndex()
+    try:
+        _, rows = index.snapshot(library_name, 'conflicts')
+        rows = [row for row in (rows or []) if str(row.get('key')) != str(rating_key)]
+        index.save_snapshot(library_name, 'conflicts', rows)
+        _conflict_scans.pop(library_name, None)
+    finally:
+        index.close()
+
+
 def _with_tasks(action, *args):
     from src.rating_overlay.task_queue import TaskQueue
     queue = TaskQueue()
@@ -1757,8 +1819,8 @@ async def _run_selected_imdb(library_name, request):
             settings = _load_settings()
             imdb_sync_state['phase'] = 'Poster rendern'
             await process_library_background(ProcessRequest(
-                library_name=library_name, rating_keys=request.rating_keys, force=False,
-                poster_source='current',
+                library_name=library_name, rating_keys=request.rating_keys, force=True,
+                operation='imdb_overlay',
                 use_imdb_cache=True, record_results=True,
                 badge_style=settings.get('badge_style'), badge_positions=settings.get('badge_positions'),
                 rating_sources={**(settings.get('rating_sources') or DEFAULT_RATING_SOURCES), 'imdb': True},

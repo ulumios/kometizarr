@@ -100,7 +100,8 @@ export default function LibraryBrowser({ onStartProcessing }) {
     try {
       const response = await fetch(reset ? '/api/restore' : '/api/process', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ library_name: library, rating_keys: selected, force: reset,
+        body: JSON.stringify({ library_name: library, rating_keys: selected, force: false,
+          operation: reset ? 'reset_plex' : 'current_overlay',
           poster_source: reset ? null : 'current', reset_to_plex: reset }),
       })
       const data = await response.json()
@@ -113,7 +114,6 @@ export default function LibraryBrowser({ onStartProcessing }) {
 
   const launchImdb = async mode => {
     if (!selected.length || busy || imdbJob?.is_running) return
-    if (mode === 'both' && !window.confirm('Falls das aktuelle Plex-Poster noch ein Kometa-Overlay enthält, kann ein Doppel-Overlay entstehen. Trotzdem fortfahren?')) return
     setBusy(true)
     setError('')
     try {

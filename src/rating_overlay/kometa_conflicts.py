@@ -11,7 +11,15 @@ def has_overlay_label(item):
 
 def has_kometizarr_overlay(backups, library_name, item):
     if item.type == 'episode':
-        return (backups.backup_dir / library_name / 'episodes' / str(item.ratingKey) / 'overlay.jpg').is_file()
+        series_title = (getattr(item, 'grandparentTitle', None)
+                        or getattr(item, 'parentTitle', None)
+                        or 'Unknown Series')
+        series_year = getattr(item, 'grandparentYear', None)
+        directory = backups._get_backup_path(library_name, series_title, year=series_year)
+        season = int(getattr(item, 'parentIndex', None)
+                     or getattr(item, 'seasonIndex', None) or 0)
+        episode = int(getattr(item, 'index', None) or 0)
+        return (directory / f'S{season:02d}E{episode:02d}-poster_overlay.jpg').is_file()
     return backups.has_overlay(library_name, item.title, year=getattr(item, 'year', None))
 
 
