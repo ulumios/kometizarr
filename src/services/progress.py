@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 
 COUNTERS = ('done', 'total', 'success', 'failed', 'skipped')
+MAX_FAILED_KEYS = 2000
 RESTORE_KINDS = ('restore', 'fresh_posters')
 IMDB_KINDS = ('imdb', 'selected_imdb')
 
@@ -25,6 +26,7 @@ class RunProgress:
         self.force_mode = False
         self.current = None
         self.results = {}
+        self.failed_keys = []        # for "retry failed"; survives nested item loops
         self.error = None
         self.percent = None          # explicit percentage for phases without items
         self.extra = {}              # task specific numbers (IMDb: scanned, matched, …)
@@ -50,6 +52,8 @@ class RunProgress:
 
     def count(self, counter, key=None, reason=None):
         setattr(self, counter, getattr(self, counter) + 1)
+        if key is not None and counter == 'failed' and len(self.failed_keys) < MAX_FAILED_KEYS:
+            self.failed_keys.append(str(key))
         if key is not None and reason is not None:
             self.results[str(key)] = reason
 
@@ -73,7 +77,8 @@ class RunProgress:
                 'failed': self.failed, 'skipped': self.skipped, 'current': self.current,
                 'percent': self.computed_percent(), 'error': self.error,
                 'stop_requested': self.stop_requested, 'started_at': self.started_at,
-                'extra': dict(self.extra), 'results': dict(self.results)}
+                'extra': dict(self.extra), 'results': dict(self.results),
+                'failed_keys': list(self.failed_keys)}
 
     # ── Views in the shape the existing UI components read ────────────────────
 
@@ -157,8 +162,10 @@ async def publish(force=False):
         snap = progress.snapshot()
         await asyncio.to_thread(
             tasks.with_tasks, 'update_progress', progress.task_id,
-            {key: snap[key] for key in ('done', 'total', 'success', 'failed', 'skipped',
-                                        'current', 'phase', 'percent')},
+            {**{key: snap[key] for key in ('done', 'total', 'success', 'failed', 'skipped',
+                                           'current', 'phase', 'percent', 'failed_keys')},
+             'library': snap['library'],
+             'extra': {key: value for key, value in snap['extra'].items() if key != 'logs'}},
             progress.extra.get('logs') if progress.kind in IMDB_KINDS else (progress.results or None))
         _last_write = time.monotonic()
         _last_result_count = result_count

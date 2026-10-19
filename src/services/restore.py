@@ -56,7 +56,7 @@ async def run_restore(request):
             else:
                 outcome = 'failed'
 
-            progress.count('success' if outcome == 'restored' else outcome)
+            progress.count('success' if outcome == 'restored' else outcome, item.ratingKey)
             if outcome == 'restored':
                 library_index.invalidate_browse_poster(request.library_name, item.ratingKey)
                 overlay.mark_item(request.library_name, item, status='original', reason=None)

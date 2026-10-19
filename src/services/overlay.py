@@ -114,6 +114,29 @@ def adopt_kometa_original(manager, item):
         return False
 
 
+STEP_LABELS = {'capture_manual': 'manuelles Plex-Poster übernehmen', 'capture_current': 'aktuelles Plex-Poster übernehmen',
+               'capture_if_missing': 'Original sichern', 'use_kometa_original': 'Kometa-Original verwenden',
+               'reset_agent': 'Agent-Poster wählen'}
+
+
+def preview_outcome(plan, manager, item, request, row, options):
+    """(counter, reason) the real run would produce, without changing anything."""
+    from src.rating_overlay.decision import plan_render
+    from src.rating_overlay.poster_storage import paths
+    if plan.skip:
+        return plan.skip
+    if plan.steps:
+        return 'success', 'würde rendern: ' + ', '.join(STEP_LABELS.get(step, step) for step in plan.steps)
+    inputs = manager.collect_inputs(item, request.badge_positions, request.badge_position or request.position)
+    if inputs['problem']:
+        return inputs['problem']
+    original, _ = paths(manager.backup_manager, request.library_name, item)
+    verdict, reason = plan_render(options, manager.backup_manager.has_overlay(request.library_name, item),
+                                  row.get('render_hash'), manager.render_hash(inputs, original),
+                                  False, plan.force_render)
+    return ('success', f'würde rendern: {reason}') if verdict == 'render' else ('skipped', reason)
+
+
 async def run_overlay(request):
     """Render overlays for a library or selected items; outcome is in ``progress``."""
     imdb_cache = api_cache = None
@@ -175,6 +198,8 @@ async def run_overlay(request):
 
         logger.info(f"🎬 Processing started: {request.library_name} ({len(all_items)} items)")
 
+        summary = progress.extra.setdefault('summary', {}) if request.plan_only else {}
+
         def record(result):
             if request.record_results:
                 progress.results[str(item.ratingKey)] = result
@@ -208,6 +233,12 @@ async def run_overlay(request):
                     settings, request.library_name, item.ratingKey) is not None,
             )
             plan = plan_item(facts, options)
+            if request.plan_only:
+                counter, reason = preview_outcome(plan, manager, item, request, row, options)
+                progress.count(counter, item.ratingKey, reason)
+                summary[reason] = summary.get(reason, 0) + 1
+                await publish()
+                continue
             failed_step = None
             for step in plan.steps:
                 if not run_preparation_step(step, manager, manual_queue, item):
@@ -241,7 +272,7 @@ async def run_overlay(request):
                     mark_item(request.library_name, item, status=counter, reason=reason)
                 if plan.remember_conflict:
                     await asyncio.to_thread(conflicts.remember, request.library_name, item)
-                progress.count(counter)
+                progress.count(counter, item.ratingKey)
                 record(reason)
                 await publish()
                 continue
@@ -272,7 +303,7 @@ async def run_overlay(request):
                 if (current_overlay or kometa_label) and not label_failed:
                     conflicts.forget(request.library_name, item.ratingKey)
                 if label_failed:
-                    progress.failed += 1
+                    progress.count('failed', item.ratingKey)
                     progress.success -= 1
                     await asyncio.to_thread(conflicts.remember, request.library_name, item)
                 if imdb_cache and not label_failed:
@@ -281,7 +312,7 @@ async def run_overlay(request):
                         imdb_cache.mark_applied(request.library_name, item.ratingKey, imdb_id,
                                                 manager.imdb_ratings[imdb_id])
             else:
-                progress.failed += 1
+                progress.count('failed', item.ratingKey)
                 mark_item(request.library_name, item, status='failed',
                            reason=manager.last_problem or 'Rendern fehlgeschlagen')
             record('Kometa-Tag nicht entfernt' if label_failed else
@@ -416,4 +447,12 @@ async def webhook_task(task):
     webhook = config.load_settings().get('webhook', {})
     if webhook.get('enabled') and (not webhook.get('libraries') or payload['library'] in webhook['libraries']):
         await run_overlay(ProcessRequest(library_name=payload['library'], rating_key=payload['key']))
+    return progress.error
+
+
+@tasks.handler('plan')
+async def plan_task(task):
+    from src.services.models import ProcessRequest
+    progress.phase = 'Vorschau'
+    await run_overlay(ProcessRequest(**{**task['payload'], 'plan_only': True, 'record_results': True}))
     return progress.error

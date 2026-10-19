@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 
-function Dashboard({ onStartProcessing, onLibrarySelect }) {
+function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
   const [libraries, setLibraries] = useState([])
   const [selectedLibrary, setSelectedLibrary] = useState(null)   // for preview / restore
   const [selectedLibraries, setSelectedLibraries] = useState([]) // for processing (names)
@@ -270,6 +270,17 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
     }
     setActiveDragBadge(null)
     setAlignmentGuides([])  // Clear alignment guides
+  }
+
+  // Preview of a large run: same decisions as the real run, nothing is changed.
+  const planProcessing = async () => {
+    if (selectedLibraries.length !== 1) return
+    const res = await fetch('/api/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ library_name: selectedLibraries[0], force, include_episodes: includeEpisodes }),
+    })
+    if (res.ok) onOpenTasks?.()
   }
 
   const startProcessing = async () => {
@@ -1049,7 +1060,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
           </div>
 
           {/* Action Buttons */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <button
               onClick={restoreOriginals}
               disabled={!selectedLibrary}
@@ -1063,6 +1074,14 @@ function Dashboard({ onStartProcessing, onLibrarySelect }) {
               className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition"
             >
               {previewLoading ? '⏳ Generating…' : '🔍 Preview'}
+            </button>
+            <button
+              onClick={planProcessing}
+              disabled={selectedLibraries.length !== 1}
+              title="Zeigt, was ein Lauf rendern, überspringen oder melden würde – ohne etwas zu ändern"
+              className="bg-gray-600 hover:bg-gray-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition"
+            >
+              📋 Lauf prüfen
             </button>
             <button
               onClick={startProcessing}

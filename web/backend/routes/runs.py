@@ -29,6 +29,13 @@ async def start_processing_batch(request: ProcessBatchRequest):
     return {"status": "started", "libraries": request.library_names, "task_id": job_id}
 
 
+@router.post("/api/plan")
+async def plan_processing(request: ProcessRequest):
+    """Preview a run: what would be rendered, skipped or fail, without changing anything."""
+    job_id = await tasks.enqueue('plan', request.model_dump())
+    return {"status": "started", "library": request.library_name, "task_id": job_id}
+
+
 @router.post("/api/restore")
 async def restore_originals(request: ProcessRequest):
     """Start restoring original posters from backups"""
@@ -112,3 +119,34 @@ async def task_status(task_id: int):
     if status is None:
         raise HTTPException(404, 'Task not found')
     return {'status': status}
+
+
+async def _task_or_404(task_id):
+    task = await asyncio.to_thread(tasks.with_tasks, 'fetch', task_id)
+    if task is None:
+        raise HTTPException(404, 'Task not found')
+    return task
+
+
+@router.post('/api/tasks/{task_id}/run-plan')
+async def run_plan(task_id: int):
+    """Execute a finished preview with exactly its options."""
+    task = await _task_or_404(task_id)
+    if task['kind'] != 'plan':
+        raise HTTPException(400, 'Not a preview task')
+    kind, payload = tasks.follow_up(task)
+    return {'status': 'started', 'task_id': await tasks.enqueue(kind, payload)}
+
+
+@router.post('/api/tasks/{task_id}/retry')
+async def retry_failed(task_id: int):
+    """Start the same task again for the items that failed."""
+    task = await _task_or_404(task_id)
+    keys = ((task.get('progress') or {}).get('failed_keys')) or []
+    if not keys:
+        raise HTTPException(400, 'Keine fehlgeschlagenen Einträge gespeichert')
+    try:
+        kind, payload = tasks.follow_up(task, keys)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {'status': 'started', 'task_id': await tasks.enqueue(kind, payload), 'items': len(keys)}

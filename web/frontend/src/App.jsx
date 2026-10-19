@@ -154,6 +154,7 @@ function App() {
             {/* Tab Content */}
             {activeTab === 'overlays' ? (
               <Dashboard
+                onOpenTasks={() => setActiveTab('tasks')}
                 onStartProcessing={() => {
                   setProgressData(null) // Clear old data (handles backend rebuilds)
                   setShowProgressBanner(true)

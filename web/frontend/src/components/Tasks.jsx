@@ -4,7 +4,7 @@ const names = {
   process: 'Overlays anwenden', batch: 'Bibliotheken bearbeiten', restore: 'Plex-Poster wiederherstellen',
   imdb: 'IMDb-Wertungen aktualisieren', selected_imdb: 'Ausgewählte IMDb-Wertungen',
   conflict: 'Kometa-Konflikte bearbeiten', webhook: 'Plex-Webhook',
-  fresh_posters: 'Frische Plex-Poster', library_scan: 'Bibliothek scannen',
+  fresh_posters: 'Frische Plex-Poster', library_scan: 'Bibliothek scannen', plan: 'Vorschau eines Laufs',
 }
 
 const statusText = { queued: 'Wartet', running: 'Läuft', completed: 'Fertig', failed: 'Fehlgeschlagen' }
@@ -30,9 +30,25 @@ function TaskProgress({ task }) {
   </div>
 }
 
+// Summary of a finished preview: how many items end up in which outcome.
+function PlanSummary({ task }) {
+  const summary = task.progress?.extra?.summary
+  if (task.kind !== 'plan' || !summary) return null
+  return <ul className="mt-2 text-xs text-gray-300 space-y-0.5">
+    {Object.entries(summary).sort((a, b) => b[1] - a[1]).map(([reason, count]) =>
+      <li key={reason}><span className="inline-block w-12 text-right mr-2 tabular-nums">{count}</span>{reason}</li>)}
+  </ul>
+}
+
 export default function Tasks() {
   const [tasks, setTasks] = useState([])
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const follow = async (task, action) => {
+    const response = await fetch(`/api/tasks/${task.id}/${action}`, { method: 'POST' })
+    const data = await response.json()
+    setMessage(response.ok ? `Aufgabe #${data.task_id} eingereiht` : (data.detail || 'Nicht möglich'))
+  }
   useEffect(() => {
     let active = true
     const load = async () => {
@@ -49,12 +65,21 @@ export default function Tasks() {
     <h2 className="text-lg font-semibold">Aufgaben</h2>
     <p className="text-sm text-gray-400">Wartende und beim Neustart unterbrochene Aufgaben werden nacheinander fortgesetzt. Die angezeigten Ergebnisse bleiben gespeichert.</p>
     {error && <p role="alert" className="text-red-300">{error}</p>}
+    {message && <p role="status" className="text-sm text-blue-300">{message}</p>}
     {tasks.length === 0 && <p className="text-sm text-gray-400">Noch keine Aufgaben vorhanden.</p>}
     <div className="divide-y divide-gray-700">{tasks.map(task => <div key={task.id} className="py-3 flex flex-wrap gap-2 justify-between text-sm">
       <div className="min-w-0"><span className="font-medium">#{task.id} · {names[task.kind] || task.kind}</span>
         <span className="text-gray-400 ml-2">{task.payload.library_name || task.payload.library || (task.payload.library_names || task.payload.libraries || []).join(', ')}</span>
         {task.error && <p className="text-red-300 text-xs">{task.error}</p>}
         <TaskProgress task={task} />
+        <PlanSummary task={task} />
+        <div className="flex gap-2 mt-2">
+          {task.kind === 'plan' && task.status === 'completed' &&
+            <button onClick={() => follow(task, 'run-plan')} className="bg-blue-600 hover:bg-blue-700 rounded px-3 py-1 text-xs">Plan ausführen</button>}
+          {task.status !== 'running' && task.status !== 'queued' && task.progress?.failed_keys?.length > 0 && task.kind !== 'plan' &&
+            <button onClick={() => follow(task, 'retry')} className="bg-orange-600 hover:bg-orange-700 rounded px-3 py-1 text-xs">
+              {task.progress.failed_keys.length} fehlgeschlagene wiederholen</button>}
+        </div>
       </div>
       <div className="text-gray-400">{statusText[task.status] || task.status} · {new Date(task.created_at * 1000).toLocaleString()} {task.attempts > 1 ? `· Versuch ${task.attempts}` : ''}</div>
     </div>)}</div>

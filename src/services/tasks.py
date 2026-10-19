@@ -66,3 +66,23 @@ def _library_of(payload):
         return None
     return payload.get('library_name') or payload.get('library') or (
         ', '.join(payload['library_names']) if payload.get('library_names') else None)
+
+
+RETRYABLE = {'process': 'process', 'webhook': 'process', 'restore': 'restore',
+             'fresh_posters': 'fresh_posters', 'conflict': 'conflict', 'plan': 'process'}
+
+
+def follow_up(task, keys=None):
+    """(kind, payload) that repeats a task, limited to ``keys`` when given."""
+    kind = RETRYABLE.get(task['kind'])
+    if kind is None:
+        raise ValueError('Diese Aufgabe kann nicht wiederholt werden')
+    payload = dict(task['payload'])
+    if task['kind'] == 'webhook':
+        payload = {'library_name': payload['library'], 'rating_key': payload.get('key')}
+    payload.pop('plan_only', None)
+    payload.pop('completed_keys', None)
+    if keys is not None:
+        payload['rating_keys'] = list(keys)
+        payload.pop('rating_key', None)
+    return kind, payload

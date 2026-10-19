@@ -25,6 +25,7 @@ class ProcessRequest(BaseModel):
     poster_source: Optional[str] = None
     operation: Optional[str] = None  # library UI: current_overlay, imdb_overlay, reset_plex
     completed_keys: List[str] = []
+    plan_only: bool = False  # preview of a large run: decide, but change nothing
 
 
 class ProcessBatchRequest(BaseModel):

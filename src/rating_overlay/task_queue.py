@@ -63,13 +63,22 @@ class TaskQueue:
                 self.db.execute('UPDATE tasks SET progress=?,results=?,updated_at=? WHERE id=?',
                                 (json.dumps(progress), json.dumps(results), time.time(), task_id))
 
+    COLUMNS = 'id,kind,payload,status,created_at,updated_at,attempts,error,progress,results'
+
+    @staticmethod
+    def _row(row):
+        return dict(id=row[0], kind=row[1], payload=json.loads(row[2]), status=row[3],
+                    created_at=row[4], updated_at=row[5], attempts=row[6], error=row[7],
+                    progress=json.loads(row[8]) if row[8] else None,
+                    results=json.loads(row[9]) if row[9] else None)
+
     def list(self, limit=30):
-        return [dict(id=row[0], kind=row[1], payload=json.loads(row[2]), status=row[3],
-                     created_at=row[4], updated_at=row[5], attempts=row[6], error=row[7],
-                     progress=json.loads(row[8]) if row[8] else None,
-                     results=json.loads(row[9]) if row[9] else None)
-                for row in self.db.execute('SELECT id,kind,payload,status,created_at,updated_at,attempts,error,progress,results '
-                                           'FROM tasks ORDER BY id DESC LIMIT ?', (min(100, max(1, limit)),))]
+        return [self._row(row) for row in self.db.execute(
+            f'SELECT {self.COLUMNS} FROM tasks ORDER BY id DESC LIMIT ?', (min(100, max(1, limit)),))]
+
+    def fetch(self, task_id):
+        row = self.db.execute(f'SELECT {self.COLUMNS} FROM tasks WHERE id=?', (task_id,)).fetchone()
+        return self._row(row) if row else None
 
     def queued_count(self):
         return self.db.execute("SELECT COUNT(*) FROM tasks WHERE status='queued'").fetchone()[0]
