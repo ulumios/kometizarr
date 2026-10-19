@@ -641,6 +641,38 @@ def _item_row(library_name, item):
         return store.get(library_name, item.ratingKey)
 
 
+def _overlay_lost(library_name, item, row):
+    """True when our uploaded poster is no longer the one Plex shows.
+
+    The thumb URL changes with the selected artwork; only then are the posters fetched."""
+    thumb = getattr(item, 'thumb', None)
+    if row.get('status') != 'rendered' or not row.get('uploaded_thumb') or not thumb \
+            or thumb == row['uploaded_thumb']:
+        return False
+    try:
+        selected = next((p for p in item.posters() if getattr(p, 'selected', False)), None)
+    except Exception:
+        logger.exception('Could not read posters of %s', item.ratingKey)
+        return False
+    key = str(getattr(selected, 'ratingKey', '') or '')
+    lost = key != row['uploaded_poster'] if row.get('uploaded_poster') else 'upload' not in key
+    if not lost:  # same poster, only the URL changed: remember it to skip this check next time
+        _mark_item(library_name, item, uploaded_thumb=thumb)
+    return lost
+
+
+def _uploaded_identity(item):
+    """Thumb and selected poster key right after our upload (see _overlay_lost)."""
+    try:
+        item.reload()
+        selected = next((p for p in item.posters() if getattr(p, 'selected', False)), None)
+        return {'uploaded_thumb': getattr(item, 'thumb', None),
+                'uploaded_poster': str(selected.ratingKey) if selected else None}
+    except Exception:
+        logger.exception('Could not read uploaded poster of %s', getattr(item, 'ratingKey', '?'))
+        return {}
+
+
 def _run_preparation_step(step, manager, manual_queue, item):
     """Execute one step planned by decision.plan_item; False when it could not be done."""
     from src.rating_overlay.kometa_conflicts import select_agent_poster
@@ -660,13 +692,6 @@ def _run_preparation_step(step, manager, manual_queue, item):
 
 def _adopt_kometa_original(manager, item):
     return False  # implemented with Kometa original support
-
-
-def _known_poster_origin(library_name, item):
-    from src.rating_overlay.item_state import ItemState
-    with ItemState() as store:
-        row = store.get(library_name, item.ratingKey)
-    return row['original_source'] if row else None
 
 
 def _is_recorded_conflict(library_name, item):
@@ -717,7 +742,8 @@ async def process_library_background(request: ProcessRequest):
         use_current_plex = request.poster_source == 'current'
         options = Options(operation=request.operation, use_current_plex=use_current_plex,
                           force=request.force and not use_current_plex,
-                          reset_kometa=request.reset_kometa, auto_reset_kometa=auto_reset_kometa)
+                          reset_kometa=request.reset_kometa, auto_reset_kometa=auto_reset_kometa,
+                          lost_overlay=settings.get('lost_overlay', 'adopt'))
 
         if request.use_imdb_cache or (settings.get('imdb_direct') or {}).get('enabled'):
             from src.rating_overlay.imdb_cache import ImdbRatingCache
@@ -770,13 +796,15 @@ async def process_library_background(request: ProcessRequest):
 
             # 1. Facts → plan (pure, see decision.py) → 2. preparation steps
             kometa_label = has_overlay_label(item)
+            row = _item_row(request.library_name, item) or {}
             facts = Facts(
                 kometa_label=kometa_label,
                 recorded_conflict=imdb_overlay and _is_recorded_conflict(request.library_name, item),
                 manual_state=manual_queue.state(request.library_name, item),
                 has_overlay=has_kometizarr_overlay(manager.backup_manager, request.library_name, item),
                 has_original=manager.backup_manager.has_backup(request.library_name, item),
-                origin=_known_poster_origin(request.library_name, item),
+                origin=row.get('original_source'),
+                lost_overlay=_overlay_lost(request.library_name, item, row),
             )
             plan = plan_item(facts, options)
             failed_step = None
@@ -797,12 +825,12 @@ async def process_library_background(request: ProcessRequest):
             if skip is None:
                 original, _ = paths(manager.backup_manager, request.library_name, item)
                 new_hash = manager.render_hash(inputs, original)
-                stored = _item_row(request.library_name, item) or {}
                 verdict, reason = plan_render(
                     options, manager.backup_manager.has_overlay(request.library_name, item),
-                    stored.get('render_hash'), new_hash, bool(plan.steps))
+                    row.get('render_hash'), new_hash, bool(plan.steps), plan.force_render)
                 if verdict == 'baseline':
-                    _mark_item(request.library_name, item, render_hash=new_hash, status='rendered')
+                    _mark_item(request.library_name, item, render_hash=new_hash, status='rendered',
+                               uploaded_thumb=getattr(item, 'thumb', None))
                 if verdict != 'render':
                     skip = ('skipped', reason)
 
@@ -828,7 +856,8 @@ async def process_library_background(request: ProcessRequest):
                 processing_state["success"] += 1
                 original, _ = paths(manager.backup_manager, request.library_name, item)
                 _mark_item(request.library_name, item, status='rendered', reason=None,
-                           rendered_at=time.time(), render_hash=manager.render_hash(inputs, original))
+                           rendered_at=time.time(), render_hash=manager.render_hash(inputs, original),
+                           **_uploaded_identity(item))
                 _invalidate_browse_poster(request.library_name, item.ratingKey)
                 _cache_backup_artwork(request.library_name, item, manager.backup_manager, True)
                 if kometa_label and not imdb_overlay:
@@ -1645,6 +1674,7 @@ def _load_settings() -> dict:
         "imdb_direct": {"enabled": False, "libraries": [], "auto_fetch": False,
                         "auto_render": False, "hour": 4},
         "kometa_conflicts": {"auto_reset": False},
+        "lost_overlay": "adopt",
         "media_overlay": {"source": True, "languages": True, "status": False, "label_size_percent": 4,
                            "episode_font_percent": 2.8, "font_percent": 4, "opacity": 180,
                            "source_labels": {"bluray": "BluRay", "prerelease": "PreRelease"},

@@ -25,6 +25,7 @@ class Options:
     force: bool = False
     reset_kometa: bool = False
     auto_reset_kometa: bool = False
+    lost_overlay: str = 'adopt'          # 'adopt', 'restore', 'report'
 
 
 @dataclass
@@ -36,6 +37,7 @@ class Facts:
     has_original: bool = False
     origin: Optional[str] = None
     kometa_original: bool = False        # Kometa's stored original is readable
+    lost_overlay: bool = False           # our upload is no longer the selected Plex poster
 
 
 @dataclass
@@ -44,6 +46,7 @@ class Plan:
     skip: Optional[tuple] = None         # (counter, reason)
     remember_conflict: bool = False
     origin: Optional[str] = None         # original_source to record after the steps
+    force_render: bool = False           # render even if the inputs did not change
 
     @classmethod
     def skipped(cls, counter, reason, remember_conflict=False):
@@ -74,7 +77,17 @@ def plan_item(facts: Facts, options: Options) -> Plan:
             plan.steps.append('use_kometa_original' if facts.kometa_original else 'reset_agent')
             plan.origin = 'kometa' if facts.kometa_original else 'agent'
 
-    if options.use_current_plex:
+    if facts.lost_overlay and not facts.kometa_label and not options.operation:
+        # Plex refreshed the metadata or someone picked another poster
+        if options.lost_overlay == 'report':
+            return Plan.skipped('skipped', 'Overlay verloren (nur gemeldet)')
+        if options.lost_overlay == 'adopt':
+            plan.steps.append('capture_current')
+            plan.origin = 'current'
+        else:
+            plan.force_render = True
+
+    if options.use_current_plex and 'capture_current' not in plan.steps:
         plan.steps.append('capture_current')
         plan.origin = 'current_with_label' if facts.kometa_label else 'current'
 
@@ -90,10 +103,12 @@ def plan_item(facts: Facts, options: Options) -> Plan:
 
 
 def plan_render(options: Options, has_overlay: bool, stored_hash: Optional[str],
-                new_hash: str, new_original: bool):
+                new_hash: str, new_original: bool, force_render: bool = False):
     """('render', reason) or ('skip', reason) / ('baseline', reason) for an evaluated item."""
     if options.operation or options.force:
         return 'render', 'erzwungen'
+    if force_render:
+        return 'render', 'Overlay verloren'
     if new_original:
         return 'render', 'neues Original'
     if not has_overlay:

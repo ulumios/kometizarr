@@ -477,7 +477,15 @@ export default function Settings() {
           Agent-Poster beim ersten Kometizarr-Lauf automatisch wählen
         </label>
         <p className="text-xs text-gray-500">Ist kein Agent-Poster vorhanden, wird das Item übersprungen. Das Kometa-Label wird erst nach erfolgreichem Rendern entfernt.</p>
-        <button onClick={() => saveSettings({ kometa_conflicts: settings.kometa_conflicts })} disabled={saving}
+        <label className="text-sm block">Wenn ein Overlay in Plex verloren geht (Metadaten aufgefrischt oder Poster gewechselt):
+          <select value={settings.lost_overlay || 'adopt'} onChange={e => setSettings(s => ({ ...s, lost_overlay: e.target.value }))}
+            className="mt-1 block bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm">
+            <option value="adopt">Neues Plex-Poster als Original übernehmen und neu rendern</option>
+            <option value="restore">Altes Original behalten und Overlay erneut hochladen</option>
+            <option value="report">Nur melden</option>
+          </select>
+        </label>
+        <button onClick={() => saveSettings({ kometa_conflicts: settings.kometa_conflicts, lost_overlay: settings.lost_overlay })} disabled={saving}
           className="bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm">Kometa-Einstellung speichern</button>
       </section>
 

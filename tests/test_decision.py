@@ -36,6 +36,37 @@ class PlanItemTest(unittest.TestCase):
         self.assertEqual(plan_item(Facts(), Options(operation='imdb_overlay')).steps, ['capture_if_missing'])
 
 
+class LostOverlayTest(unittest.TestCase):
+    def test_lost_overlay_actions(self):
+        facts = Facts(lost_overlay=True, has_overlay=True, has_original=True)
+        adopt = plan_item(facts, Options())
+        self.assertEqual((adopt.steps, adopt.origin), (['capture_current'], 'current'))
+        self.assertTrue(plan_item(facts, Options(lost_overlay='restore')).force_render)
+        self.assertEqual(plan_item(facts, Options(lost_overlay='report')).skip[1], 'Overlay verloren (nur gemeldet)')
+        self.assertEqual(plan_render(Options(), True, 'a', 'a', False, force_render=True)[0], 'render')
+
+    def test_detects_foreign_selected_poster(self):
+        row = {'status': 'rendered', 'uploaded_thumb': '/thumb/1', 'uploaded_poster': 'upload://posters/abc'}
+        ours = SimpleNamespace(ratingKey=1, thumb='/thumb/1', posters=Mock())
+        self.assertFalse(main._overlay_lost('Movies', ours, row))
+        ours.posters.assert_not_called()  # unchanged thumb needs no Plex request
+        replaced = SimpleNamespace(ratingKey=1, thumb='/thumb/2', posters=lambda: [
+            SimpleNamespace(ratingKey='upload://posters/abc', selected=False),
+            SimpleNamespace(ratingKey='tmdb://poster', selected=True)])
+        self.assertTrue(main._overlay_lost('Movies', replaced, row))
+        refreshed = SimpleNamespace(ratingKey=1, thumb='/thumb/3', posters=lambda: [
+            SimpleNamespace(ratingKey='upload://posters/abc', selected=True)])
+        with patch.object(main, '_mark_item') as mark:
+            self.assertFalse(main._overlay_lost('Movies', refreshed, row))
+        mark.assert_called_once_with('Movies', refreshed, uploaded_thumb='/thumb/3')
+
+    def test_items_without_known_upload_use_upload_marker(self):
+        row = {'status': 'rendered', 'uploaded_thumb': '/thumb/1', 'uploaded_poster': None}
+        item = SimpleNamespace(ratingKey=1, thumb='/thumb/2', posters=lambda: [
+            SimpleNamespace(ratingKey='metadata://posters/agent', selected=True)])
+        self.assertTrue(main._overlay_lost('Movies', item, row))
+
+
 class PlanRenderTest(unittest.TestCase):
     def test_render_only_when_something_changed(self):
         options = Options()
@@ -103,7 +134,6 @@ class RunSkipsUnchangedTest(unittest.TestCase):
             with patch.object(main, '_create_manager', return_value=manager), \
                  patch.object(main, '_load_settings', return_value={'imdb_direct': {}}), \
                  patch.object(main, '_item_row', return_value={'render_hash': 'same'}), \
-                 patch.object(main, '_known_poster_origin', return_value=None), \
                  patch.object(main, '_mark_item'), \
                  patch('src.rating_overlay.poster_storage.paths', return_value=(original, original)), \
                  patch('src.rating_overlay.kometa_conflicts.ManualPosterQueue') as queue, \
