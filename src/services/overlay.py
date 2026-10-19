@@ -268,6 +268,9 @@ async def run_overlay(request):
 
             if skip is not None:
                 counter, reason = skip
+                if plan.steps:  # a captured original drops the old overlay file
+                    library_index.set_flags(request.library_name, item.ratingKey,
+                                            has_overlay=manager.backup_manager.has_overlay(request.library_name, item))
                 if counter != 'skipped' or not reason.startswith(('unverändert', 'Ausgangszustand')):
                     mark_item(request.library_name, item, status=counter, reason=reason)
                 if plan.remember_conflict:
@@ -291,6 +294,7 @@ async def run_overlay(request):
                            rendered_at=time.time(), render_hash=manager.render_hash(inputs, original),
                            **uploaded_identity(item))
                 library_index.invalidate_browse_poster(request.library_name, item.ratingKey)
+                library_index.set_flags(request.library_name, item.ratingKey, has_overlay=True)
                 library_index.cache_backup_artwork(request.library_name, item, manager.backup_manager, True)
                 if kometa_label and not imdb_overlay:
                     try:
@@ -313,6 +317,8 @@ async def run_overlay(request):
                                                 manager.imdb_ratings[imdb_id])
             else:
                 progress.count('failed', item.ratingKey)
+                library_index.set_flags(request.library_name, item.ratingKey,
+                                        has_overlay=manager.backup_manager.has_overlay(request.library_name, item))
                 mark_item(request.library_name, item, status='failed',
                            reason=manager.last_problem or 'Rendern fehlgeschlagen')
             record('Kometa-Tag nicht entfernt' if label_failed else

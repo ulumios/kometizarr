@@ -12,6 +12,9 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [query, setQuery] = useState('')
   const [searchEpisodes, setSearchEpisodes] = useState(saved.searchEpisodes || false)
   const [conflictsOnly, setConflictsOnly] = useState(saved.conflictsOnly || false)
+  // Items without a Kometizarr overlay; Kometa-overlaid items (label or conflict) stay hidden
+  const [missingOverlay, setMissingOverlay] = useState(saved.missingOverlay || false)
+  const [flagsReady, setFlagsReady] = useState(true)
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [selected, setSelected] = useState([])
@@ -30,9 +33,9 @@ export default function LibraryBrowser({ onStartProcessing }) {
 
   useEffect(() => {
     sessionStorage.setItem('kometizarr-browser', JSON.stringify({
-      library, parent, trail, page, search, searchEpisodes, conflictsOnly,
+      library, parent, trail, page, search, searchEpisodes, conflictsOnly, missingOverlay,
     }))
-  }, [library, parent, trail, page, search, searchEpisodes, conflictsOnly])
+  }, [library, parent, trail, page, search, searchEpisodes, conflictsOnly, missingOverlay])
 
   useEffect(() => {
     if (!pendingJob) return undefined
@@ -93,13 +96,14 @@ export default function LibraryBrowser({ onStartProcessing }) {
     if (query) params.set('q', query)
     if (searchEpisodes && !parent) params.set('episodes', 'true')
     if (conflictsOnly) params.set('conflicts_only', 'true')
+    if (missingOverlay) params.set('missing_overlay', 'true')
     fetch(`/api/library/${encodeURIComponent(library)}/browse?${params}`)
       .then(async r => { const data = await r.json(); if (!r.ok) throw Error(data.detail || 'Library unavailable'); return data })
-      .then(data => { if (active) { setItems(data.items); setTotal(data.total); setIndexing(!!data.is_running); if (data.error) setError(data.error) } })
+      .then(data => { if (active) { setItems(data.items); setTotal(data.total); setIndexing(!!data.is_running); setFlagsReady(data.overlay_flags_ready !== false); if (data.error) setError(data.error) } })
       .catch(e => { if (active) setError(e.message) })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [library, parent, page, query, searchEpisodes, conflictsOnly, reload])
+  }, [library, parent, page, query, searchEpisodes, conflictsOnly, missingOverlay, reload])
 
   useEffect(() => {
     if (!indexing) return
@@ -169,11 +173,19 @@ export default function LibraryBrowser({ onStartProcessing }) {
         </label>}
       </div>
       {indexing && <p className="text-sm text-blue-300 mt-2">Bibliothek wird im Hintergrund indexiert…</p>}
+      {missingOverlay && !flagsReady && !indexing && <p className="text-sm text-yellow-300 mt-2">
+        Für den Filter „Nur ohne Overlay“ muss die Bibliothek einmal neu gescannt werden.{' '}
+        <button className="underline" onClick={async () => {
+          await fetch('/api/library-scan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ libraries: [library] }) })
+          setIndexing(true); setReload(value => value + 1)
+        }}>Jetzt scannen</button></p>}
     </div>
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
       <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
-        <span>{loading ? 'Lade Einträge…' : `${total} ${conflictsOnly ? 'Konflikte' : parent?.type === 'show' ? 'Staffeln' : parent?.type === 'season' || searchEpisodes ? 'Episoden' : 'Einträge'}`}</span>
-        <div className="flex gap-3 items-center"><label className="text-sm flex items-center gap-2"><input type="checkbox" checked={conflictsOnly} onChange={e => { setConflictsOnly(e.target.checked); setPage(1); setSelected([]) }} /> Nur Konflikte</label>
+        <span>{loading ? 'Lade Einträge…' : `${total} ${conflictsOnly ? 'Konflikte' : missingOverlay && !parent ? 'ohne Overlay' : parent?.type === 'show' ? 'Staffeln' : parent?.type === 'season' || searchEpisodes ? 'Episoden' : 'Einträge'}`}</span>
+        <div className="flex gap-3 items-center"><label className="text-sm flex items-center gap-2"><input type="checkbox" checked={conflictsOnly} onChange={e => { setConflictsOnly(e.target.checked); if (e.target.checked) setMissingOverlay(false); setPage(1); setSelected([]) }} /> Nur Konflikte</label>
+        <label className="text-sm flex items-center gap-2" title="Titel ohne Kometizarr-Overlay; Titel mit Kometa-Overlay werden ausgeblendet"><input type="checkbox" checked={missingOverlay} onChange={e => { setMissingOverlay(e.target.checked); if (e.target.checked) setConflictsOnly(false); setPage(1); setSelected([]) }} /> Nur ohne Overlay</label>
         <button disabled={!items.length} onClick={() => setSelected(previous => allVisible ? previous.filter(k => !items.some(item => item.key === k)) : [...new Set([...previous, ...items.map(item => item.key)])])}
           className="text-sm text-blue-300 disabled:text-gray-600">{allVisible ? 'Sichtbare abwählen' : 'Sichtbare auswählen'}</button></div>
       </div>

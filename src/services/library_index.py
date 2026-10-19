@@ -14,14 +14,17 @@ browse_image_cache = {}
 scans = {}
 
 
-def read_library_index(library_name, parent_key, episodes, q, page, page_size, conflicts_only=False):
+def read_library_index(library_name, parent_key, episodes, q, page, page_size, conflicts_only=False,
+                       missing_overlay=False):
     from src.rating_overlay.media_index import MediaIndex
     index = MediaIndex()
     try:
         updated_at, _ = index.snapshot(library_name, 'browse')
         result = index.browse(library_name, parent_key, episodes, q, page, page_size,
-                              conflicts_only=conflicts_only) if updated_at else {
+                              conflicts_only=conflicts_only, missing_overlay=missing_overlay) if updated_at else {
             'total': 0, 'page': page, 'items': []}
+        # The overlay filter needs one scan after this feature was installed
+        result['overlay_flags_ready'] = index.flags_ready(library_name)
         return updated_at, result
     finally:
         index.close()
@@ -44,12 +47,50 @@ def refresh_library_index(library_name, progress=None):
                             scanned=len(items), total=len(items),
                             phase=f'Plex gelesen: {len(items)} Einträge')
     if progress is not None:
+        progress.update(phase='Prüfe Overlays und Kometa-Labels', scanned=0, total=len(items))
+    flags = overlay_flags(library, library_name, kinds)
+    if progress is not None:
         progress.update(phase='Speichere Bibliothek', scanned=0, total=len(items))
     index = MediaIndex()
     try:
-        index.replace_library(library_name, items, progress)
+        index.replace_library(library_name, items, progress, flags=flags)
     finally:
         index.close()
+
+
+def overlay_flags(library, library_name, kinds):
+    """(has_overlay, kometa_label) per item for the "ohne Overlay" filter.
+
+    Kometa labels come from one label search per type instead of reading every item."""
+    from src.rating_overlay.backup_manager import PosterBackupManager
+    from src.rating_overlay.kometa_conflicts import KOMETA_LABEL
+    labelled = set()
+    for kind in kinds:
+        libtype = kind or library.type
+        try:
+            labelled.update(str(item.ratingKey) for item in library.search(libtype=libtype, label=KOMETA_LABEL))
+        except Exception:
+            logger.exception('Kometa label search failed for %s', libtype)
+    backups = PosterBackupManager(str(config.BACKUP_DIR))
+
+    def flags(item):
+        if item.type not in ('movie', 'show', 'episode'):
+            return None, None
+        return int(backups.has_overlay(library_name, item)), int(str(item.ratingKey) in labelled)
+    return flags
+
+
+def set_flags(library_name, rating_key, **flags):
+    """Update the overlay filter flags of one indexed item; never breaks a run."""
+    from src.rating_overlay.media_index import MediaIndex
+    try:
+        index = MediaIndex()
+        try:
+            index.set_flags(library_name, rating_key, **flags)
+        finally:
+            index.close()
+    except Exception:
+        logger.exception('Could not update overlay flags for %s', rating_key)
 
 
 def index_new_item(library_name, item):
@@ -68,8 +109,9 @@ def index_new_item(library_name, item):
             if grandparent_key and not index.has_item(library_name, grandparent_key):
                 ancestors.append(parent.parent())
         for ancestor in reversed(ancestors):
-            index.upsert_item(library_name, ancestor)
-        index.upsert_item(library_name, item)
+            index.upsert_item(library_name, ancestor, has_overlay=None)
+        from src.rating_overlay.kometa_conflicts import has_overlay_label
+        index.upsert_item(library_name, item, has_overlay=0, kometa_label=int(has_overlay_label(item)))
     finally:
         index.close()
 

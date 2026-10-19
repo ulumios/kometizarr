@@ -60,6 +60,9 @@ async def run_restore(request):
             if outcome == 'restored':
                 library_index.invalidate_browse_poster(request.library_name, item.ratingKey)
                 overlay.mark_item(request.library_name, item, status='original', reason=None)
+                # a reset to the agent poster also removed Kometa's label
+                library_index.set_flags(request.library_name, item.ratingKey, has_overlay=False,
+                                        kometa_label=False if request.reset_to_plex else None)
             await publish()
 
             # Rate limiting

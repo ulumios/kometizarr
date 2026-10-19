@@ -40,6 +40,11 @@ class MediaIndex:
                 library TEXT NOT NULL, key TEXT NOT NULL, mime TEXT NOT NULL,
                 thumb TEXT, updated_at REAL NOT NULL, PRIMARY KEY(library, key));
         ''')
+        # Overlay flags for the "ohne Overlay" filter; NULL until the library was scanned.
+        columns = {row[1] for row in self.db.execute('PRAGMA table_info(media)')}
+        for name in ('has_overlay', 'kometa_label'):
+            if name not in columns:
+                self.db.execute(f'ALTER TABLE media ADD COLUMN {name} INTEGER')
         # One-time migration of previously recorded JSON conflicts.
         with self.db:
             for library, payload in self.db.execute(
@@ -74,29 +79,37 @@ class MediaIndex:
             self.db.execute('INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?, ?)',
                             (library, name, time.time(), json.dumps(payload) if payload is not None else None))
 
-    def replace_library(self, library, items, progress=None):
+    MEDIA_COLUMNS = ('library, key, title, type, parent_key, year, item_index, series, season, thumb, '
+                     'has_overlay, kometa_label')
+
+    def replace_library(self, library, items, progress=None, flags=None):
+        """``flags(item)`` returns (has_overlay, kometa_label) for the overlay filter."""
         rows = []
         for position, item in enumerate(items, 1):
             try:
+                overlay, label = flags(item) if flags else (None, None)
                 rows.append((library, str(item.ratingKey), item.title, item.type,
                              str(getattr(item, 'parentRatingKey', '') or '') or None,
                              getattr(item, 'year', None), getattr(item, 'index', None),
                              getattr(item, 'grandparentTitle', None), getattr(item, 'parentIndex', None),
-                             getattr(item, 'thumb', None)))
+                             getattr(item, 'thumb', None), overlay, label))
             except NotFound:
                 logger.info('Plex item disappeared while indexing %s: %s', library, item.ratingKey)
             if progress is not None and (position % 50 == 0 or position == len(items)):
                 progress.update(scanned=position, total=len(items), phase='Speichere Bibliothek')
         with self.db:
             self.db.execute('DELETE FROM media WHERE library=?', (library,))
-            self.db.executemany('INSERT INTO media VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', rows)
+            self.db.executemany(f'INSERT INTO media ({self.MEDIA_COLUMNS}) VALUES ({",".join("?" * 12)})', rows)
             self.db.execute('DELETE FROM conflicts WHERE library=? AND key NOT IN '
                             '(SELECT key FROM media WHERE library=?)', (library, library))
             self.db.execute('INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?, NULL)',
                             (library, 'browse', time.time()))
+            if flags:
+                self.db.execute('INSERT OR REPLACE INTO snapshots VALUES (?, ?, ?, NULL)',
+                                (library, 'overlay_flags', time.time()))
 
     def browse(self, library, parent_key=None, episodes=False, q='', page=1, page_size=60,
-               conflicts_only=False):
+               conflicts_only=False, missing_overlay=False):
         parent_row = None
         if parent_key is not None:
             parent_row = self.db.execute(
@@ -127,6 +140,23 @@ class MediaIndex:
             else:
                 where += ' AND (key IN (SELECT key FROM conflicts WHERE library=?) OR key IN (SELECT show_key FROM conflicts WHERE library=?))'
                 params.extend([library, library])
+            select = 'SELECT key, title, type, year, item_index, series, season FROM media WHERE ' + where
+        if missing_overlay:
+            # Rendered items have no overlay flag of 0; Kometa items (label or recorded conflict) are hidden.
+            missing = ("has_overlay=0 AND coalesce(kometa_label,0)=0 AND type IN ('movie','show','episode') "
+                       "AND key NOT IN (SELECT key FROM conflicts WHERE library=?)")
+            episodes_missing = (f"SELECT parent_key FROM media WHERE library=? AND type='episode' AND {missing}")
+            if parent_row and parent_row[0] == 'show':
+                where += f' AND key IN ({episodes_missing})'  # seasons with an episode lacking an overlay
+                params.extend([library, library])
+            elif parent_row or episodes:
+                where += f' AND {missing}'
+                params.append(library)
+            else:
+                # Top level: the movie/show itself, or a show with an episode lacking an overlay
+                where += (f" AND (({missing}) OR (type='show' AND key IN (SELECT parent_key FROM media "
+                          f"WHERE library=? AND type='season' AND key IN ({episodes_missing}))))")
+                params.extend([library, library, library, library])
             select = 'SELECT key, title, type, year, item_index, series, season FROM media WHERE ' + where
         total = self.db.execute('SELECT count(*) FROM media WHERE ' + where, params).fetchone()[0]
         rows = self.db.execute(select + order + ' LIMIT ? OFFSET ?',
@@ -205,11 +235,24 @@ class MediaIndex:
         return self.db.execute('SELECT 1 FROM media WHERE library=? AND key=?',
                                (library, str(rating_key))).fetchone() is not None
 
-    def upsert_item(self, library, item):
+    def upsert_item(self, library, item, has_overlay=0, kometa_label=None):
         values = (library, str(item.ratingKey), item.title, item.type,
                   str(getattr(item, 'parentRatingKey', '') or '') or None,
                   getattr(item, 'year', None), getattr(item, 'index', None),
                   getattr(item, 'grandparentTitle', None), getattr(item, 'parentIndex', None),
-                  getattr(item, 'thumb', None))
+                  getattr(item, 'thumb', None), has_overlay, kometa_label)
         with self.db:
-            self.db.execute('INSERT OR REPLACE INTO media VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', values)
+            self.db.execute(f'INSERT OR REPLACE INTO media ({self.MEDIA_COLUMNS}) VALUES ({",".join("?" * 12)})', values)
+
+    def set_flags(self, library, rating_key, has_overlay=None, kometa_label=None):
+        """Keep the overlay filter current after renders, restores and Kometa actions."""
+        updates = {name: int(value) for name, value in (('has_overlay', has_overlay), ('kometa_label', kometa_label))
+                   if value is not None}
+        if not updates:
+            return
+        with self.db:
+            self.db.execute(f'UPDATE media SET {", ".join(f"{name}=?" for name in updates)} WHERE library=? AND key=?',
+                            (*updates.values(), library, str(rating_key)))
+
+    def flags_ready(self, library):
+        return bool(self.snapshot(library, 'overlay_flags')[0])

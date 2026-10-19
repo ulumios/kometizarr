@@ -38,6 +38,8 @@ def forget(library_name, rating_key):
     index = MediaIndex()
     try:
         index.forget_conflict(library_name, rating_key)
+        # Conflicts are resolved by removing Kometa's label (render or reset)
+        index.set_flags(library_name, rating_key, kometa_label=False)
         snapshots.pop(library_name, None)
     finally:
         index.close()
