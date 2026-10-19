@@ -21,19 +21,22 @@ class TaskQueue:
             attempts INTEGER NOT NULL DEFAULT 0, error TEXT,
             progress TEXT, results TEXT)''')
         columns = {row[1] for row in self.db.execute('PRAGMA table_info(tasks)')}
-        for name in ('progress', 'results'):
+        for name, kind in (('progress', 'TEXT'), ('results', 'TEXT'), ('run_after', 'REAL')):
             if name not in columns:
-                self.db.execute(f'ALTER TABLE tasks ADD COLUMN {name} TEXT')
+                self.db.execute(f'ALTER TABLE tasks ADD COLUMN {name} {kind}')
         self.db.execute('CREATE INDEX IF NOT EXISTS tasks_next ON tasks(status, id)')
         self.db.commit()
 
     def close(self):
         self.db.close()
 
-    def add(self, kind, payload):
+    def add(self, kind, payload, delay=0):
+        """Queue a task; ``delay`` seconds keep it waiting (e.g. until Plex scanned a new file)."""
+        now = time.time()
         with self.db:
-            cursor = self.db.execute('INSERT INTO tasks (kind,payload,status,created_at,updated_at) VALUES (?, ?, ?, ?, ?)',
-                                     (kind, json.dumps(payload), 'queued', time.time(), time.time()))
+            cursor = self.db.execute('INSERT INTO tasks (kind,payload,status,created_at,updated_at,run_after) '
+                                     'VALUES (?, ?, ?, ?, ?, ?)',
+                                     (kind, json.dumps(payload), 'queued', now, now, now + delay if delay else None))
         return cursor.lastrowid
 
     def resume(self):
@@ -42,7 +45,9 @@ class TaskQueue:
 
     def claim(self):
         with self.db:
-            row = self.db.execute("SELECT id,kind,payload,results FROM tasks WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+            row = self.db.execute("SELECT id,kind,payload,results FROM tasks WHERE status='queued' "
+                                  "AND (run_after IS NULL OR run_after <= ?) ORDER BY id LIMIT 1",
+                                  (time.time(),)).fetchone()
             if row:
                 self.db.execute("UPDATE tasks SET status='running', attempts=attempts+1, updated_at=? WHERE id=?",
                                 (time.time(), row[0]))
@@ -63,14 +68,14 @@ class TaskQueue:
                 self.db.execute('UPDATE tasks SET progress=?,results=?,updated_at=? WHERE id=?',
                                 (json.dumps(progress), json.dumps(results), time.time(), task_id))
 
-    COLUMNS = 'id,kind,payload,status,created_at,updated_at,attempts,error,progress,results'
+    COLUMNS = 'id,kind,payload,status,created_at,updated_at,attempts,error,progress,results,run_after'
 
     @staticmethod
     def _row(row):
         return dict(id=row[0], kind=row[1], payload=json.loads(row[2]), status=row[3],
                     created_at=row[4], updated_at=row[5], attempts=row[6], error=row[7],
                     progress=json.loads(row[8]) if row[8] else None,
-                    results=json.loads(row[9]) if row[9] else None)
+                    results=json.loads(row[9]) if row[9] else None, run_after=row[10])
 
     def list(self, limit=30):
         return [self._row(row) for row in self.db.execute(

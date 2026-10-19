@@ -3,8 +3,10 @@
 import asyncio
 import json
 import logging
+import secrets
+from typing import Optional
 
-from fastapi import APIRouter, Form
+from fastapi import APIRouter, Form, HTTPException, Request
 
 from src.services import config, health, tasks
 
@@ -12,9 +14,18 @@ logger = logging.getLogger('kometizarr')
 router = APIRouter()
 
 
+def _check_token(webhook, token, source):
+    """Only enforced when a token is configured; works for Plex, Sonarr and Radarr URLs."""
+    expected = webhook.get('token')
+    if expected and not secrets.compare_digest(str(token or ''), str(expected)):
+        health.record_webhook(source, 'abgelehnt', 'falsches oder fehlendes Token')
+        raise HTTPException(403, 'Invalid webhook token')
+
+
 @router.post("/webhook/plex")
-async def plex_webhook(payload: str = Form(...)):
+async def plex_webhook(payload: str = Form(...), token: Optional[str] = None):
     """Receive Plex webhooks — triggers processing on library.new events."""
+    _check_token(config.load_settings().get('webhook', {}), token, 'plex')
     try:
         data = json.loads(payload)
         event = data.get("event", "")
@@ -51,3 +62,28 @@ async def plex_webhook(payload: str = Form(...)):
         logger.error(f"Webhook error: {e}")
         health.record_webhook('plex', 'unlesbar', f'Fehler: {e}')
     return {"status": "ok"}
+
+
+@router.post("/webhook/arr")
+async def arr_webhook(request: Request, token: Optional[str] = None):
+    """Sonarr/Radarr "On Import/Upgrade": render the title once Plex has scanned it."""
+    from src.services import arr
+    webhook = config.load_settings().get('webhook', {})
+    _check_token(webhook, token, 'arr')
+    data = await request.json()
+    event = data.get('eventType', '')
+    source = 'sonarr' if data.get('series') else 'radarr' if data.get('movie') else 'arr'
+    if event == 'Test':
+        health.record_webhook(source, event, 'Test empfangen')
+        return {'status': 'ok', 'message': 'Kometizarr webhook reachable'}
+    if not webhook.get('enabled'):
+        health.record_webhook(source, event, 'ignoriert: ausgeschaltet')
+        return {'status': 'ignored', 'reason': 'webhook disabled'}
+    target = arr.parse(data)
+    if target is None:
+        health.record_webhook(source, event, 'ignoriert: kein Import')
+        return {'status': 'ignored', 'reason': f'event {event!r} needs no render'}
+    task_id = await tasks.enqueue('arr', {'target': target, 'attempt': 1}, delay=arr.FIRST_DELAY)
+    health.record_webhook(source, event, f'eingereiht (#{task_id})', None, target['title'])
+    logger.info(f"{source} webhook queued: {target['title']} (task {task_id})")
+    return {'status': 'queued', 'task_id': task_id, 'title': target['title']}

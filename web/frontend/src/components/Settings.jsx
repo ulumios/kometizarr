@@ -368,21 +368,30 @@ export default function Settings() {
     setDeleteResult(lastError ? { error: lastError } : { items: totalItems })
   }
 
-  const webhookUrl = `${window.location.origin}/webhook/plex`
-  const [copied, setCopied] = useState(false)
-  const copyWebhookUrl = () => {
+  // The optional token is part of the URL so Plex, Sonarr and Radarr can all send it.
+  const tokenQuery = settings?.webhook?.token ? `?token=${encodeURIComponent(settings.webhook.token)}` : ''
+  const webhookUrl = `${window.location.origin}/webhook/plex${tokenQuery}`
+  const arrWebhookUrl = `${window.location.origin}/webhook/arr${tokenQuery}`
+  const [copied, setCopied] = useState('')
+  const copyWebhookUrl = (url) => {
     if (navigator.clipboard) {
-      navigator.clipboard.writeText(webhookUrl)
+      navigator.clipboard.writeText(url)
     } else {
       const el = document.createElement('textarea')
-      el.value = webhookUrl
+      el.value = url
       document.body.appendChild(el)
       el.select()
       document.execCommand('copy')
       document.body.removeChild(el)
     }
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    setCopied(url)
+    setTimeout(() => setCopied(''), 2000)
+  }
+  const generateToken = () => {
+    const bytes = new Uint8Array(18)
+    crypto.getRandomValues(bytes)
+    const token = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+    setSettings(s => ({ ...s, webhook: { ...s.webhook, token } }))
   }
 
   if (!settings) return <div className="text-gray-400 text-center py-12">Loading settings…</div>
@@ -498,7 +507,7 @@ export default function Settings() {
         <p className="text-xs text-gray-500">Bei einem Kometa-Konflikt wird zuerst Kometas gespeichertes Original verwendet, erst danach das Plex-Agent-Poster.</p>
         <label className="text-sm block">Wenn ein Overlay in Plex verloren geht (Metadaten aufgefrischt oder Poster gewechselt):
           <select value={settings.lost_overlay || 'adopt'} onChange={e => setSettings(s => ({ ...s, lost_overlay: e.target.value }))}
-            className="mt-1 block bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm">
+            className="mt-1 block w-full max-w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm">
             <option value="adopt">Neues Plex-Poster als Original übernehmen und neu rendern</option>
             <option value="restore">Altes Original behalten und Overlay erneut hochladen</option>
             <option value="report">Nur melden</option>
@@ -510,22 +519,35 @@ export default function Settings() {
 
       {/* ── Plex Webhook ──────────────────────────────────────────── */}
       <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
-        <h2 className="text-white font-semibold text-base">🔗 Plex Webhook</h2>
+        <h2 className="text-white font-semibold text-base">🔗 Webhooks (Plex, Sonarr, Radarr)</h2>
         <p className="text-xs text-gray-400">
-          Automatically trigger processing when new items are added to Plex.
-          Add the URL below to <strong className="text-gray-300">Plex → Settings → Webhooks</strong>.
+          Automatically trigger processing when new items are added.
+          Plex: <strong className="text-gray-300">Settings → Webhooks</strong>.
+          Sonarr/Radarr: <strong className="text-gray-300">Settings → Connect → Webhook</strong>, trigger „On Import“ and „On Upgrade“, method POST.
+          Sonarr/Radarr report an import before Plex has scanned it; Kometizarr waits and retries for about half an hour.
         </p>
 
-        <div>
-          <label className="text-xs text-gray-400 block mb-1">Webhook URL (copy into Plex)</label>
+        {[['Plex', webhookUrl], ['Sonarr / Radarr', arrWebhookUrl]].map(([label, url]) => <div key={label}>
+          <label className="text-xs text-gray-400 block mb-1">{label} URL</label>
           <div className="flex gap-2">
-            <input readOnly value={webhookUrl}
-              className="flex-1 px-3 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm text-gray-300 font-mono" />
-            <button onClick={copyWebhookUrl}
+            <input readOnly value={url}
+              className="flex-1 min-w-0 px-3 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm text-gray-300 font-mono" />
+            <button onClick={() => copyWebhookUrl(url)} aria-label={`${label} URL kopieren`}
               className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-white transition min-w-[2.5rem]">
-              {copied ? '✓' : '📋'}
+              {copied === url ? '✓' : '📋'}
             </button>
           </div>
+        </div>)}
+
+        <div>
+          <label className="text-xs text-gray-400 block mb-1" htmlFor="webhook-token">Token (optional; wenn gesetzt, muss es in der URL stehen)</label>
+          <div className="flex gap-2">
+            <input id="webhook-token" value={settings.webhook?.token || ''} placeholder="kein Token"
+              onChange={e => setSettings(s => ({ ...s, webhook: { ...s.webhook, token: e.target.value.trim() } }))}
+              className="flex-1 min-w-0 px-3 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm text-gray-300 font-mono" />
+            <button onClick={generateToken} className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm text-white">Erzeugen</button>
+          </div>
+          <p className="text-xs text-gray-500 mt-1">Nach dem Ändern speichern und die URLs in Plex, Sonarr und Radarr aktualisieren.</p>
         </div>
 
         <div className="flex items-center justify-between">

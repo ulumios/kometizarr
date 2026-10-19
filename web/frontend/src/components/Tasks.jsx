@@ -6,7 +6,7 @@ const names = {
   conflict: 'Kometa-Konflikte bearbeiten', webhook: 'Plex-Webhook',
   fresh_posters: 'Frische Plex-Poster', library_scan: 'Bibliothek scannen', plan: 'Vorschau eines Laufs',
   backup_audit: 'Backups prüfen', backup_cleanup: 'Verwaiste Backups löschen',
-  plex_uploads: 'Alte Plex-Uploads', plex_maintenance: 'Plex-Wartung',
+  plex_uploads: 'Alte Plex-Uploads', plex_maintenance: 'Plex-Wartung', arr: 'Sonarr/Radarr-Import',
 }
 
 const statusText = { queued: 'Wartet', running: 'Läuft', completed: 'Fertig', failed: 'Fehlgeschlagen' }
@@ -85,7 +85,7 @@ export default function Tasks() {
     {tasks.length === 0 && <p className="text-sm text-gray-400">Noch keine Aufgaben vorhanden.</p>}
     <div className="divide-y divide-gray-700">{tasks.map(task => <div key={task.id} className="py-3 flex flex-wrap gap-2 justify-between text-sm">
       <div className="min-w-0"><span className="font-medium">#{task.id} · {names[task.kind] || task.kind}</span>
-        <span className="text-gray-400 ml-2">{task.payload.library_name || task.payload.library || (task.payload.library_names || task.payload.libraries || []).join(', ')}</span>
+        <span className="text-gray-400 ml-2">{task.payload.library_name || task.payload.library || task.payload.target?.title || (task.payload.library_names || task.payload.libraries || []).join(', ')}</span>
         {task.error && <p className="text-red-300 text-xs">{task.error}</p>}
         <TaskProgress task={task} />
         <PlanSummary task={task} />
@@ -98,7 +98,8 @@ export default function Tasks() {
               {task.progress.failed_keys.length} fehlgeschlagene wiederholen</button>}
         </div>
       </div>
-      <div className="text-gray-400">{statusText[task.status] || task.status} · {new Date(task.created_at * 1000).toLocaleString()} {task.attempts > 1 ? `· Versuch ${task.attempts}` : ''}</div>
+      <div className="text-gray-400">{statusText[task.status] || task.status}{task.status === 'queued' && task.run_after * 1000 > Date.now()
+        ? ` bis ${new Date(task.run_after * 1000).toLocaleTimeString()}` : ''} · {new Date(task.created_at * 1000).toLocaleString()} {task.attempts > 1 ? `· Versuch ${task.attempts}` : ''}</div>
     </div>)}</div>
   </section>
 }

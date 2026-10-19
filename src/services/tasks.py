@@ -26,8 +26,8 @@ def with_tasks(action, *args):
         queue.close()
 
 
-async def enqueue(kind, payload):
-    return await asyncio.to_thread(with_tasks, 'add', kind, payload)
+async def enqueue(kind, payload, delay=0):
+    return await asyncio.to_thread(with_tasks, 'add', kind, payload, delay)
 
 
 async def run_task(task):
