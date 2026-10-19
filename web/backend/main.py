@@ -691,7 +691,21 @@ def _run_preparation_step(step, manager, manual_queue, item):
 
 
 def _adopt_kometa_original(manager, item):
-    return False  # implemented with Kometa original support
+    """Use Kometa's stored clean poster as our original (read-only on Kometa's side)."""
+    from src.rating_overlay.kometa_originals import as_jpeg, find_original
+    from src.rating_overlay.poster_storage import replace_image, write_metadata
+    source = find_original(_load_settings(), manager.library_name, item.ratingKey)
+    if source is None:
+        return False
+    try:
+        original, overlay = manager.backup_manager.item_paths(manager.library_name, item)
+        replace_image(original, as_jpeg(source))
+        overlay.unlink(missing_ok=True)
+        write_metadata(manager.backup_manager, manager.library_name, item, source='kometa')
+        return True
+    except Exception:
+        logger.exception('Could not use Kometa original %s', source)
+        return False
 
 
 def _is_recorded_conflict(library_name, item):
@@ -732,6 +746,7 @@ async def process_library_background(request: ProcessRequest):
         # Settings are read once per run, not once per item.
         settings = _load_settings()
         auto_reset_kometa = (settings.get('kometa_conflicts') or {}).get('auto_reset', False)
+        from src.rating_overlay.kometa_originals import find_original
         _apply_saved_overlay_options(request, settings)
         api_cache = ApiCache()
         manager = _create_manager(request.library_name, request.rating_sources,
@@ -805,6 +820,8 @@ async def process_library_background(request: ProcessRequest):
                 has_original=manager.backup_manager.has_backup(request.library_name, item),
                 origin=row.get('original_source'),
                 lost_overlay=_overlay_lost(request.library_name, item, row),
+                kometa_original=kometa_label and find_original(
+                    settings, request.library_name, item.ratingKey) is not None,
             )
             plan = plan_item(facts, options)
             failed_step = None
@@ -1675,6 +1692,7 @@ def _load_settings() -> dict:
                         "auto_render": False, "hour": 4},
         "kometa_conflicts": {"auto_reset": False},
         "lost_overlay": "adopt",
+        "kometa": {"originals_dir": "", "library_map": {}},
         "media_overlay": {"source": True, "languages": True, "status": False, "label_size_percent": 4,
                            "episode_font_percent": 2.8, "font_percent": 4, "opacity": 180,
                            "source_labels": {"bluray": "BluRay", "prerelease": "PreRelease"},

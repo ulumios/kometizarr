@@ -147,5 +147,34 @@ class RunSkipsUnchangedTest(unittest.TestCase):
         self.assertEqual(main.processing_state['item_results'], {'1': 'unverändert'})
 
 
+class KometaOriginalTest(unittest.TestCase):
+    def test_finds_original_with_library_mapping_and_converts_png(self):
+        from src.rating_overlay.kometa_originals import as_jpeg, find_original
+        with tempfile.TemporaryDirectory() as folder:
+            store = Path(folder) / 'overlays' / 'Movies Original Posters'
+            store.mkdir(parents=True)
+            Image.new('RGB', (4, 6), 'red').save(store / '42.png')
+            settings = {'kometa': {'originals_dir': str(Path(folder) / 'overlays'),
+                                   'library_map': {'Filme': 'Movies'}}}
+            source = find_original(settings, 'Filme', 42)
+            self.assertEqual(source, store / '42.png')
+            self.assertIsNone(find_original(settings, 'Filme', 43))
+            self.assertTrue(as_jpeg(source).startswith(b'\xff\xd8'))
+
+    def test_adopting_kometa_original_replaces_backup(self):
+        from src.rating_overlay.backup_manager import PosterBackupManager
+        with tempfile.TemporaryDirectory() as folder:
+            store = Path(folder) / 'overlays' / 'Movies Original Posters'
+            store.mkdir(parents=True)
+            Image.new('RGB', (4, 6), 'green').save(store / '7.jpg')
+            backups = PosterBackupManager(Path(folder) / 'backups')
+            manager = SimpleNamespace(library_name='Movies', backup_manager=backups)
+            item = SimpleNamespace(type='movie', title='X', year=1, ratingKey=7, guids=[])
+            with patch.object(main, '_load_settings', return_value={
+                    'kometa': {'originals_dir': str(Path(folder) / 'overlays')}}):
+                self.assertTrue(main._adopt_kometa_original(manager, item))
+            self.assertTrue(backups.has_backup('Movies', item))
+
+
 if __name__ == '__main__':
     unittest.main()

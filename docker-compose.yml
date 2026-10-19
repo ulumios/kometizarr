@@ -10,6 +10,8 @@ services:
       - ./:/app/kometizarr  # Mount entire project
       - ./web/backend:/app/backend  # Mount backend source for hot-reload (no rebuild needed)
       - ./data/backups:/backups  # Poster backups (PERSISTENT - survives reboots)
+      # Optional: Kometa config folder (read-only) to reuse its original posters
+      # - /path/to/kometa/config:/kometa:ro
       - ./data/temp:/temp  # Temp processing
     environment:
       - PLEX_URL=${PLEX_URL:-http://192.168.1.20:32400}

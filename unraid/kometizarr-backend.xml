@@ -35,6 +35,9 @@
   <Config Name="App Data" Target="/app/kometizarr/data" Default="/mnt/user/appdata/kometizarr/data" Mode="rw"
     Type="Path" Display="always" Required="true" Mask="false"
     Description="Persistent storage for Kometizarr settings (cron schedule, webhook config, etc.)."/>
+  <Config Name="Kometa Config (optional)" Target="/kometa" Default="/mnt/user/appdata/kometa/config" Mode="ro"
+    Type="Path" Display="advanced" Required="false" Mask="false"
+    Description="Read-only: lets Kometizarr reuse the original posters Kometa saved before drawing its overlays."/>
 
   <!-- Required environment variables -->
   <Config Name="Plex URL" Target="PLEX_URL" Default="http://192.168.1.x:32400" Mode=""

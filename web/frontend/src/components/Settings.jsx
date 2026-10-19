@@ -477,6 +477,21 @@ export default function Settings() {
           Agent-Poster beim ersten Kometizarr-Lauf automatisch wählen
         </label>
         <p className="text-xs text-gray-500">Ist kein Agent-Poster vorhanden, wird das Item übersprungen. Das Kometa-Label wird erst nach erfolgreichem Rendern entfernt.</p>
+        <label className="text-sm block">Kometa-Ordner mit Originalen (schreibgeschützt eingebunden, leer = automatisch /kometa/overlays):
+          <input value={settings.kometa?.originals_dir || ''} placeholder="/kometa/overlays"
+            onChange={e => setSettings(s => ({ ...s, kometa: { ...s.kometa, originals_dir: e.target.value } }))}
+            className="mt-1 block w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" />
+        </label>
+        <label className="text-sm block">Abweichende Bibliotheksnamen in Kometa (eine Zeile pro Bibliothek: <code>Plex-Name = Kometa-Name</code>):
+          <textarea rows={2} defaultValue={Object.entries(settings.kometa?.library_map || {}).map(([k, v]) => `${k} = ${v}`).join('\n')}
+            onBlur={e => {
+              const map = Object.fromEntries(e.target.value.split('\n').map(line => line.split('=').map(part => part.trim()))
+                .filter(([k, v]) => k && v))
+              setSettings(s => ({ ...s, kometa: { ...s.kometa, library_map: map } }))
+            }}
+            className="mt-1 block w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" />
+        </label>
+        <p className="text-xs text-gray-500">Bei einem Kometa-Konflikt wird zuerst Kometas gespeichertes Original verwendet, erst danach das Plex-Agent-Poster.</p>
         <label className="text-sm block">Wenn ein Overlay in Plex verloren geht (Metadaten aufgefrischt oder Poster gewechselt):
           <select value={settings.lost_overlay || 'adopt'} onChange={e => setSettings(s => ({ ...s, lost_overlay: e.target.value }))}
             className="mt-1 block bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm">
@@ -485,7 +500,7 @@ export default function Settings() {
             <option value="report">Nur melden</option>
           </select>
         </label>
-        <button onClick={() => saveSettings({ kometa_conflicts: settings.kometa_conflicts, lost_overlay: settings.lost_overlay })} disabled={saving}
+        <button onClick={() => saveSettings({ kometa_conflicts: settings.kometa_conflicts, lost_overlay: settings.lost_overlay, kometa: settings.kometa })} disabled={saving}
           className="bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm">Kometa-Einstellung speichern</button>
       </section>
 
