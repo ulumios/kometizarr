@@ -171,3 +171,16 @@ web/frontend/src/components/dashboard/*   Dashboard aufgeteilt
 
 Backend aufteilen und Fortschrittsmodell laufen zusammen, weil beim Aufteilen ohnehin die
 vier Status-Objekte angefasst werden müssten.
+
+## Umsetzungsstand
+
+Alle Patches 1–12 sind umgesetzt und mit `pytest tests` (66 Tests) sowie `vite build` geprüft.
+Abweichungen vom Plan:
+
+- Die Tabelle `conflicts` bleibt als Anzeige-Cache mit Serien-/Staffelzuordnung bestehen;
+  `origins` und `kometa_manual_pending.json` sind in `item_state` aufgegangen.
+- Der IMDb-Abgleich nutzt weiterhin seine Tabelle `applied`; der `render_hash` enthält die
+  IMDb-Wertung zusätzlich.
+- Nicht gegen einen echten Plex-Server getestet: Erkennung verlorener Overlays, Löschen alter
+  Uploads im Metadatenordner, Sonarr/Radarr-Zuordnung. Diese Wege sind mit Tests und
+  Sicherungen (Trockenlauf, Doppelprüfung, Plausibilitätsgrenzen) abgedeckt.

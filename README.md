@@ -54,6 +54,18 @@ Kometizarr automatically adds gorgeous multi-source rating badges to your Plex m
 - **Rate limited:** Respects API limits (TMDB, MDBList)
 - **Resume support:** Skip already-processed items
 
+### 🧭 Kometizarr 2.0 (in development)
+See [`docs/KONZEPT.md`](docs/KONZEPT.md) for the design.
+- **One state per item** — `item_state` table; backups are stored by IMDb ID (`/backups/<library>/tt…/original.jpg`, episodes in `<show>/S01E02/`). Old title folders are moved there on first access.
+- **Render only on change** — a fingerprint of ratings, design and original decides; unchanged posters are not uploaded again. External rating answers are cached for 3 days.
+- **Lost overlays** — when Plex refreshes metadata and our poster is no longer selected, Kometizarr adopts the new poster, re-uploads, or only reports (setting).
+- **Kometa** — conflicts are resolved from Kometa's own stored originals when its config is mounted read-only at `/kometa`.
+- **Preview large runs** ("Lauf prüfen") and **retry failed items** from the task list.
+- **Design per library** — every library can have its own badge design.
+- **Maintenance tab** — backup size, orphaned backups, old poster uploads in Plex (needs the "Plex Media Server" folder at `/plex`), Plex clean-up actions.
+- **Status tab** — Plex, API keys, IMDb dataset, disk space, mounts, queue, schedule, recent webhooks.
+- **Webhooks** — optional `?token=…`; Sonarr/Radarr can call `/webhook/arr` (On Import / On Upgrade).
+
 ## 🖼️ Screenshots
 
 ### Dashboard
@@ -350,27 +362,33 @@ kometizarr/
 ├── src/
 │   ├── rating_overlay/
 │   │   ├── multi_rating_badge.py    # Badge generation with dynamic logos
-│   │   ├── rating_fetcher.py        # TMDB, OMDb, MDBList API calls
-│   │   ├── plex_poster_manager.py   # Orchestration and Plex integration
-│   │   ├── backup_manager.py        # Original poster backups
-│   │   └── overlay_composer.py      # Poster compositing
+│   │   ├── rating_fetcher.py        # TMDB, OMDb, MDBList API calls (cached)
+│   │   ├── plex_poster_manager.py   # Inputs, render fingerprint, render + upload
+│   │   ├── decision.py              # What happens to an item (pure functions)
+│   │   ├── item_state.py            # One row of state per Plex item
+│   │   ├── poster_storage.py        # Backup layout by IMDb ID
+│   │   └── backup_manager.py        # Original poster backups
+│   ├── services/                    # Runs, task queue, progress, maintenance, health
 │   ├── collection_manager/          # Smart collection management
 │   └── utils/
 │       └── logger.py                # Clean progress tracking
 ├── web/
-│   ├── backend/                     # FastAPI backend with WebSocket
-│   │   ├── main.py                  # API endpoints, cron scheduler, webhook
+│   ├── backend/                     # FastAPI app
+│   │   ├── main.py                  # Wiring and startup only
+│   │   ├── routes/                  # HTTP endpoints
 │   │   ├── Dockerfile
 │   │   └── requirements.txt
 │   ├── frontend/                    # React frontend
 │   │   ├── src/
-│   │   │   ├── components/          # Dashboard, Settings, ProcessingProgress
+│   │   │   ├── components/          # Tabs; dashboard/ holds the split dashboard
 │   │   │   ├── App.jsx
 │   │   │   └── main.jsx
 │   │   ├── Dockerfile
 │   │   ├── nginx.conf
 │   │   └── package.json
 │   └── README.md                    # Web UI documentation
+├── docs/KONZEPT.md                  # Kometizarr 2.0 design (German)
+├── tests/                           # pytest suite
 ├── assets/
 │   └── logos/                       # RT tomato/popcorn logos
 ├── examples/                        # Example scripts
