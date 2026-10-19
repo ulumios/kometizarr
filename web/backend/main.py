@@ -47,7 +47,8 @@ def _plex_server():
     return PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
 
 
-def _create_manager(library_name, rating_sources=None, badge_style=None, media_overlay=None):
+def _create_manager(library_name, rating_sources=None, badge_style=None, media_overlay=None,
+                    api_cache=None):
     return PlexPosterManager(
         plex_url=os.getenv('PLEX_URL'),
         plex_token=os.getenv('PLEX_TOKEN'),
@@ -60,6 +61,7 @@ def _create_manager(library_name, rating_sources=None, badge_style=None, media_o
         rating_sources=rating_sources,
         badge_style=badge_style,
         media_overlay=media_overlay,
+        api_cache=api_cache,
     )
 
 
@@ -633,6 +635,33 @@ def _mark_item(library_name, item, **fields):
         logger.exception('Could not record state for %s', getattr(item, 'ratingKey', '?'))
 
 
+def _item_row(library_name, item):
+    from src.rating_overlay.item_state import ItemState
+    with ItemState() as store:
+        return store.get(library_name, item.ratingKey)
+
+
+def _run_preparation_step(step, manager, manual_queue, item):
+    """Execute one step planned by decision.plan_item; False when it could not be done."""
+    from src.rating_overlay.kometa_conflicts import select_agent_poster
+    if step == 'capture_manual':
+        if not _backup_clean_plex_poster(manager, item):
+            return False
+        manual_queue.remove(manager.library_name, item)
+        return True
+    if step in ('capture_current', 'capture_if_missing'):
+        return _backup_clean_plex_poster(manager, item)
+    if step == 'reset_agent':
+        return select_agent_poster(item) and _backup_clean_plex_poster(manager, item)
+    if step == 'use_kometa_original':
+        return _adopt_kometa_original(manager, item)
+    raise ValueError(f'Unknown step {step}')
+
+
+def _adopt_kometa_original(manager, item):
+    return False  # implemented with Kometa original support
+
+
 def _known_poster_origin(library_name, item):
     from src.rating_overlay.item_state import ItemState
     with ItemState() as store:
@@ -653,7 +682,7 @@ async def process_library_background(request: ProcessRequest):
     """Background task for processing library"""
     global processing_start_time
 
-    imdb_cache = None
+    imdb_cache = api_cache = None
     try:
         # Reset processing state for new run
         processing_state["is_processing"] = True
@@ -669,22 +698,26 @@ async def process_library_background(request: ProcessRequest):
         processing_state["force_mode"] = request.force
         processing_start_time = datetime.now()
 
+        from src.rating_overlay.api_cache import ApiCache
+        from src.rating_overlay.decision import Facts, Options, STEP_FAILURES, plan_item, plan_render
         from src.rating_overlay.kometa_conflicts import (
-            ManualPosterQueue, has_overlay_label, has_kometizarr_overlay, remove_overlay_label,
-            select_agent_poster)
+            ManualPosterQueue, has_overlay_label, has_kometizarr_overlay, remove_overlay_label)
         from src.rating_overlay.poster_storage import paths
 
         # Settings are read once per run, not once per item.
         settings = _load_settings()
         auto_reset_kometa = (settings.get('kometa_conflicts') or {}).get('auto_reset', False)
         _apply_saved_overlay_options(request, settings)
+        api_cache = ApiCache()
         manager = _create_manager(request.library_name, request.rating_sources,
-                                  request.badge_style, request.media_overlay)
+                                  request.badge_style, request.media_overlay, api_cache=api_cache)
         manual_queue = ManualPosterQueue()
         current_overlay = request.operation == 'current_overlay'
         imdb_overlay = request.operation == 'imdb_overlay'
         use_current_plex = request.poster_source == 'current'
-        render_force = request.force and not use_current_plex
+        options = Options(operation=request.operation, use_current_plex=use_current_plex,
+                          force=request.force and not use_current_plex,
+                          reset_kometa=request.reset_kometa, auto_reset_kometa=auto_reset_kometa)
 
         if request.use_imdb_cache or (settings.get('imdb_direct') or {}).get('enabled'):
             from src.rating_overlay.imdb_cache import ImdbRatingCache
@@ -735,74 +768,57 @@ async def process_library_background(request: ProcessRequest):
                 await broadcast_progress()
                 continue
 
-            # Each guard below ends the item with a counter and a reason.
-            skip = None  # (counter, reason, remember_conflict)
-            manual_state = manual_queue.state(request.library_name, item)
+            # 1. Facts → plan (pure, see decision.py) → 2. preparation steps
             kometa_label = has_overlay_label(item)
-            if imdb_overlay and (kometa_label or _is_recorded_conflict(request.library_name, item)):
-                skip = ('skipped', 'Kometa-Konflikt: übersprungen', True)
-            elif not current_overlay and manual_state == 'waiting':
-                skip = ('skipped', 'wartet auf manuelles Plex-Poster', False)
-            elif not current_overlay and manual_state == 'changed':
-                if _backup_clean_plex_poster(manager, item):
-                    manual_queue.remove(request.library_name, item)
-                else:
-                    skip = ('skipped', 'manuelles Plex-Poster konnte nicht gesichert werden', False)
+            facts = Facts(
+                kometa_label=kometa_label,
+                recorded_conflict=imdb_overlay and _is_recorded_conflict(request.library_name, item),
+                manual_state=manual_queue.state(request.library_name, item),
+                has_overlay=has_kometizarr_overlay(manager.backup_manager, request.library_name, item),
+                has_original=manager.backup_manager.has_backup(request.library_name, item),
+                origin=_known_poster_origin(request.library_name, item),
+            )
+            plan = plan_item(facts, options)
+            failed_step = None
+            for step in plan.steps:
+                if not _run_preparation_step(step, manager, manual_queue, item):
+                    failed_step = step
+                    break
+            skip = plan.skip or (STEP_FAILURES[failed_step] if failed_step else None)
 
-            needs_reset = False
-            if skip is None and not current_overlay and kometa_label:
-                already_processed = has_kometizarr_overlay(manager.backup_manager, request.library_name, item)
-                needs_reset = request.reset_kometa or (not already_processed and auto_reset_kometa)
-                if not already_processed and not needs_reset:
-                    skip = ('skipped', 'Kometa-Konflikt: Reset erforderlich', True)
-
-            if skip is None and use_current_plex:
-                if _backup_clean_plex_poster(manager, item):
-                    _record_poster_origin(request.library_name, item,
-                                          'current_with_label' if kometa_label else 'current')
-                else:
-                    skip = ('failed', 'Plex-Poster konnte nicht gesichert werden', False)
-
-            if skip is None and imdb_overlay:
+            # 3. Inputs and render decision
+            inputs = None
+            if skip is None:
+                if plan.origin:
+                    _record_poster_origin(request.library_name, item, plan.origin)
+                inputs = manager.collect_inputs(item, request.badge_positions,
+                                                request.badge_position or request.position)
+                skip = inputs['problem']
+            if skip is None:
                 original, _ = paths(manager.backup_manager, request.library_name, item)
-                origin = _known_poster_origin(request.library_name, item)
-                had_backup = original.is_file()
-                if origin == 'current_with_label':
-                    skip = ('skipped', 'Unsicheres Original: Kometa-Poster', False)
-                elif not had_backup and not _backup_clean_plex_poster(manager, item):
-                    skip = ('failed', 'Original-Backup fehlt', False)
-                elif not origin:
-                    _record_poster_origin(request.library_name, item,
-                                          'existing_backup' if had_backup else 'current')
-
-            if skip is None and needs_reset and (
-                    not select_agent_poster(item) or not _backup_clean_plex_poster(manager, item)):
-                skip = ('skipped', 'kein sauberes Agent-Poster gefunden', False)
+                new_hash = manager.render_hash(inputs, original)
+                stored = _item_row(request.library_name, item) or {}
+                verdict, reason = plan_render(
+                    options, manager.backup_manager.has_overlay(request.library_name, item),
+                    stored.get('render_hash'), new_hash, bool(plan.steps))
+                if verdict == 'baseline':
+                    _mark_item(request.library_name, item, render_hash=new_hash, status='rendered')
+                if verdict != 'render':
+                    skip = ('skipped', reason)
 
             if skip is not None:
-                counter, reason, remember_conflict = skip
-                _mark_item(request.library_name, item, status=counter, reason=reason)
-                if remember_conflict:
+                counter, reason = skip
+                if counter != 'skipped' or not reason.startswith(('unverändert', 'Ausgangszustand')):
+                    _mark_item(request.library_name, item, status=counter, reason=reason)
+                if plan.remember_conflict:
                     await asyncio.to_thread(_remember_kometa_conflict, request.library_name, item)
                 processing_state[counter] += 1
                 record(reason)
                 await broadcast_progress()
                 continue
 
-            # Determine positioning mode
-            # 1. If badge_positions provided, use 4-badge mode
-            # 2. Otherwise, use legacy unified badge with position (string or dict)
-            if request.badge_positions:
-                result = manager.process_movie(
-                    item,
-                    position=request.position,  # Not used in 4-badge mode, but kept for compat
-                    force=render_force,
-                    badge_positions=request.badge_positions
-                )
-            else:
-                # Legacy unified badge mode
-                position_param = request.badge_position if request.badge_position else request.position
-                result = manager.process_movie(item, position=position_param, force=render_force)
+            # 4. Execute: the decision is made, so the manager renders unconditionally
+            result = manager.process_movie(item, force=True, inputs=inputs)
 
             # Handle three-state return: True=success, None=skip, False=fail
             label_failed = False
@@ -810,8 +826,9 @@ async def process_library_background(request: ProcessRequest):
                 processing_state["skipped"] += 1
             elif result:
                 processing_state["success"] += 1
+                original, _ = paths(manager.backup_manager, request.library_name, item)
                 _mark_item(request.library_name, item, status='rendered', reason=None,
-                           rendered_at=time.time())
+                           rendered_at=time.time(), render_hash=manager.render_hash(inputs, original))
                 _invalidate_browse_poster(request.library_name, item.ratingKey)
                 _cache_backup_artwork(request.library_name, item, manager.backup_manager, True)
                 if kometa_label and not imdb_overlay:
@@ -835,9 +852,11 @@ async def process_library_background(request: ProcessRequest):
                                                 manager.imdb_ratings[imdb_id])
             else:
                 processing_state["failed"] += 1
-                _mark_item(request.library_name, item, status='failed', reason='Rendern fehlgeschlagen')
+                _mark_item(request.library_name, item, status='failed',
+                           reason=manager.last_problem or 'Rendern fehlgeschlagen')
             record('Kometa-Tag nicht entfernt' if label_failed else
-                   'gerendert' if result is True else 'übersprungen' if result is None else 'fehlgeschlagen')
+                   'gerendert' if result is True else
+                   (manager.last_problem or ('übersprungen' if result is None else 'fehlgeschlagen')))
 
             # Broadcast progress to all WebSocket connections
             await broadcast_progress()
@@ -861,6 +880,8 @@ async def process_library_background(request: ProcessRequest):
     finally:
         if imdb_cache:
             imdb_cache.close()
+        if api_cache:
+            api_cache.close()
 
 
 @app.get("/api/status")
@@ -890,11 +911,14 @@ async def preview_posters(request: PreviewRequest):
     import requests as req
     from src.rating_overlay.poster_storage import paths
 
+    api_cache = None
     try:
         settings = _load_settings()
         media_options = request.media_overlay or settings.get('media_overlay', {})
+        from src.rating_overlay.api_cache import ApiCache
+        api_cache = ApiCache()
         manager = _create_manager(request.library_name, request.rating_sources,
-                                  request.badge_style, media_options)
+                                  request.badge_style, media_options, api_cache=api_cache)
 
         all_items = manager.library.all()
         if request.include_episodes and manager.library.type == 'show':
@@ -912,81 +936,33 @@ async def preview_posters(request: PreviewRequest):
         results = []
         for item in sample:
             try:
-                # Fetch ratings using same priority order as process_movie
-                plex_ratings = manager._extract_plex_ratings(item)
-                ratings = {}
-                for key in ('tmdb', 'imdb', 'rt_critic', 'rt_audience'):
-                    if key in plex_ratings:
-                        ratings[key] = plex_ratings[key]
-                imdb_id = manager._extract_imdb_id(getattr(item, 'guids', []) or [])
-                if imdb_id in manager.imdb_ratings:
-                    ratings['imdb'] = manager.imdb_ratings[imdb_id]
-
-                if request.rating_sources:
-                    ratings = {k: v for k, v in ratings.items() if request.rating_sources.get(k, True)}
-
-                from src.rating_overlay.media_badges import source_label, audio_languages, draw_media_badges, show_status_label
-                source = source_label(item, media_options) if media_options.get('source') else None
-                languages = audio_languages(item) if item.type == 'episode' and media_options.get('languages') else []
-                status = None
-                if item.type == 'show' and media_options.get('status'):
-                    tmdb_id = manager._extract_tmdb_id(getattr(item, 'guids', []))
-                    if tmdb_id:
-                        status = show_status_label(manager.rating_fetcher.fetch_tmdb_status(tmdb_id), media_options)
-                if not ratings and not source and not languages and not status:
+                inputs = manager.collect_inputs(item, request.badge_positions)
+                if inputs['problem']:
                     continue
-                style = manager.badge_style
-                positions = request.badge_positions
-                if item.type == 'episode':
-                    from src.rating_overlay.media_badges import episode_overlay_options
-                    style, positions, media_options = episode_overlay_options(style, positions, media_options)
 
                 # Use the clean original from the same backup layout the renderer uses
                 original, _ = paths(manager.backup_manager, manager.library_name, item)
-                poster_path = str(original) if original.is_file() else None
-
+                poster_path = original if original.is_file() else None
                 if not poster_path:
                     poster_url = manager.server.url(item.thumb) if item.type == 'episode' and item.thumb else item.posterUrl
                     if not poster_url:
                         continue
-                    response = req.get(
-                        poster_url,
-                        headers={'X-Plex-Token': manager.plex_token},
-                        timeout=15
-                    )
+                    response = req.get(poster_url, headers={'X-Plex-Token': manager.plex_token}, timeout=15)
                     if response.status_code != 200:
                         continue
-                    tmp_src = Path(f'/tmp/kometizarr_prev_src_{item.ratingKey}.jpg')
-                    tmp_src.write_bytes(response.content)
-                    poster_path = str(tmp_src)
+                    poster_path = Path(f'/tmp/kometizarr_prev_src_{item.ratingKey}.jpg')
+                    poster_path.write_bytes(response.content)
 
-                # Match the upload canvas for both posters and episodes.
-                from src.rating_overlay.media_badges import prepare_canvas
-                canvas_path = f'/tmp/kometizarr_prev_canvas_{item.ratingKey}.jpg'
-                prepare_canvas(poster_path, canvas_path, episode=item.type == 'episode')
-                poster_path = canvas_path
-
-                # Apply overlay (no upload)
-                output_path = f'/tmp/kometizarr_prev_{item.ratingKey}.jpg'
-                if ratings:
-                    manager.multi_rating_badge.apply_to_poster(
-                        poster_path=str(poster_path), ratings=ratings, output_path=output_path,
-                        badge_style=style, badge_positions=positions)
-                else:
-                    from PIL import Image
-                    with Image.open(poster_path) as img:
-                        img.convert('RGB').save(output_path, 'JPEG')
-                if source or languages or status:
-                    draw_media_badges(output_path, source, languages, media_options,
-                                      status=status, badge_style=style)
-
-                with open(output_path, 'rb') as f:
-                    image_b64 = base64.b64encode(f.read()).decode()
+                # Same renderer as the real run, without upload or backup
+                output_path = Path(f'/tmp/kometizarr_prev_{item.ratingKey}.jpg')
+                manager.render_image(poster_path, output_path, inputs)
+                image_b64 = base64.b64encode(output_path.read_bytes()).decode()
+                output_path.unlink(missing_ok=True)
 
                 results.append({
                     'title': item.title,
                     'year': getattr(item, 'year', None),
-                    'ratings': ratings,
+                    'ratings': inputs['ratings'],
                     'image': image_b64,
                 })
 
@@ -999,6 +975,9 @@ async def preview_posters(request: PreviewRequest):
     except Exception as e:
         logger.error(f"Preview failed: {e}")
         return {'error': str(e), 'previews': []}
+    finally:
+        if api_cache:
+            api_cache.close()
 
 
 @app.websocket("/ws/progress")

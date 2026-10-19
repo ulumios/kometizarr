@@ -17,7 +17,10 @@ class RatingFetcher:
     OMDB_BASE_URL = "http://www.omdbapi.com/"
     MDBLIST_BASE_URL = "https://mdblist.com/api"
 
-    def __init__(self, tmdb_api_key: str, omdb_api_key: Optional[str] = None, mdblist_api_key: Optional[str] = None):
+    TIMEOUT = 20
+
+    def __init__(self, tmdb_api_key: str, omdb_api_key: Optional[str] = None, mdblist_api_key: Optional[str] = None,
+                 cache=None):
         """
         Initialize rating fetcher
 
@@ -29,8 +32,15 @@ class RatingFetcher:
         self.tmdb_api_key = tmdb_api_key
         self.omdb_api_key = omdb_api_key
         self.mdblist_api_key = mdblist_api_key
+        self.cache = cache  # optional ApiCache
+
+    def _cached(self, key, fetch):
+        return self.cache.get_or_fetch(key, fetch) if self.cache else fetch()
 
     def fetch_tmdb_rating(self, tmdb_id: int, media_type: str = 'movie') -> Optional[Dict]:
+        return self._cached(f'tmdb:{media_type}:{tmdb_id}', lambda: self._fetch_tmdb_rating(tmdb_id, media_type))
+
+    def _fetch_tmdb_rating(self, tmdb_id: int, media_type: str = 'movie') -> Optional[Dict]:
         """
         Fetch TMDB rating for a movie or TV show
 
@@ -45,7 +55,7 @@ class RatingFetcher:
         url = f"{self.TMDB_BASE_URL}/{endpoint}?api_key={self.tmdb_api_key}"
 
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=self.TIMEOUT)
             response.raise_for_status()
             data = response.json()
 
@@ -64,6 +74,9 @@ class RatingFetcher:
             return None
 
     def fetch_tmdb_status(self, tmdb_id: int) -> Optional[str]:
+        return self._cached(f'tmdb-status:{tmdb_id}', lambda: self._fetch_tmdb_status(tmdb_id))
+
+    def _fetch_tmdb_status(self, tmdb_id: int) -> Optional[str]:
         """Return the current TMDB TV status."""
         try:
             response = requests.get(f"{self.TMDB_BASE_URL}/tv/{tmdb_id}?api_key={self.tmdb_api_key}", timeout=20)
@@ -86,6 +99,9 @@ class RatingFetcher:
             return None
 
     def fetch_tmdb_episode_rating(self, tmdb_id: int, season: int, episode: int) -> Optional[Dict]:
+        return self._cached(f'tmdb-episode:{tmdb_id}:{season}:{episode}', lambda: self._fetch_tmdb_episode_rating(tmdb_id, season, episode))
+
+    def _fetch_tmdb_episode_rating(self, tmdb_id: int, season: int, episode: int) -> Optional[Dict]:
         """
         Fetch TMDB rating for a specific TV episode
 
@@ -100,7 +116,7 @@ class RatingFetcher:
         url = f"{self.TMDB_BASE_URL}/tv/{tmdb_id}/season/{season}/episode/{episode}?api_key={self.tmdb_api_key}"
 
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=self.TIMEOUT)
             response.raise_for_status()
             data = response.json()
 
@@ -115,6 +131,9 @@ class RatingFetcher:
             return None
 
     def fetch_omdb_rating(self, imdb_id: str) -> Optional[Dict]:
+        return self._cached(f'omdb:{imdb_id}', lambda: self._fetch_omdb_rating(imdb_id))
+
+    def _fetch_omdb_rating(self, imdb_id: str) -> Optional[Dict]:
         """
         Fetch IMDb and Rotten Tomatoes ratings from OMDb
 
@@ -131,7 +150,7 @@ class RatingFetcher:
         url = f"{self.OMDB_BASE_URL}?i={imdb_id}&apikey={self.omdb_api_key}"
 
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=self.TIMEOUT)
             response.raise_for_status()
             data = response.json()
 
@@ -159,6 +178,9 @@ class RatingFetcher:
             return None
 
     def fetch_mdblist_rating(self, imdb_id: str) -> Optional[Dict]:
+        return self._cached(f'mdblist:{imdb_id}', lambda: self._fetch_mdblist_rating(imdb_id))
+
+    def _fetch_mdblist_rating(self, imdb_id: str) -> Optional[Dict]:
         """
         Fetch RT ratings from MDBList (includes both critic and audience scores)
 
@@ -175,7 +197,7 @@ class RatingFetcher:
         url = f"{self.MDBLIST_BASE_URL}/?apikey={self.mdblist_api_key}&i={imdb_id}"
 
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=self.TIMEOUT)
             response.raise_for_status()
             data = response.json()
 

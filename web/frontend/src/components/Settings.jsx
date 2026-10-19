@@ -410,12 +410,12 @@ export default function Settings() {
       <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
         <div>
           <h2 className="text-white font-semibold text-base">🕐 Scheduled Processing</h2>
-          <p className="text-xs text-gray-400 mt-1">Two independent schedules — one for new items, one to refresh ratings on everything.</p>
+          <p className="text-xs text-gray-400 mt-1">Two independent schedules. The normal run only uploads posters whose ratings, design or original changed; the force run re-renders everything.</p>
         </div>
 
         <CronCard
           label="Normal run"
-          desc="Processes new items only (skips already overlaid posters)"
+          desc="New items plus posters whose ratings or design changed"
           color="blue"
           cron={settings.cron_normal || {}}
           libraries={libraries}
@@ -424,7 +424,7 @@ export default function Settings() {
 
         <CronCard
           label="Force run"
-          desc="Re-processes everything — refreshes ratings on all posters"
+          desc="Re-renders and uploads every poster, even if nothing changed"
           color="purple"
           cron={settings.cron_force || {}}
           libraries={libraries}

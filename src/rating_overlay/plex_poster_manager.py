@@ -22,6 +22,9 @@ from ..utils.logger import ProgressTracker, print_header, print_subheader, print
 
 logger = logging.getLogger(__name__)
 
+# Bump when the drawing code changes in a way that should re-render every poster.
+RENDERER_VERSION = 1
+
 
 class PlexPosterManager:
     """Apply rating overlays to Plex posters with automatic backup"""
@@ -38,7 +41,8 @@ class PlexPosterManager:
         badge_style: Optional[Dict[str, Any]] = None,
         dry_run: bool = False,
         rating_sources: Optional[Dict[str, bool]] = None,
-        media_overlay: Optional[Dict[str, Any]] = None
+        media_overlay: Optional[Dict[str, Any]] = None,
+        api_cache=None
     ):
         """
         Initialize Plex poster manager
@@ -64,6 +68,7 @@ class PlexPosterManager:
         self.badge_style = badge_style or {}  # Store badge styling options
         self.media_overlay = media_overlay or {}
         self.imdb_ratings = {}  # Official IMDb dataset values, when enabled and cached
+        self.last_problem = None
 
         # Connect to Plex
         self.server = PlexServer(plex_url, plex_token)
@@ -71,7 +76,7 @@ class PlexPosterManager:
 
         # Initialize components
         self.backup_manager = PosterBackupManager(backup_dir)
-        self.rating_fetcher = RatingFetcher(tmdb_api_key, omdb_api_key, mdblist_api_key)
+        self.rating_fetcher = RatingFetcher(tmdb_api_key, omdb_api_key, mdblist_api_key, cache=api_cache)
         # BadgeGenerator is legacy (old unified badge), badge_style is now a dict for MultiRatingBadge
         self.badge_generator = BadgeGenerator(style='default')
         self.overlay_composer = OverlayComposer(self.badge_generator)
@@ -139,232 +144,153 @@ class PlexPosterManager:
 
         return plex_ratings
 
+    def collect_inputs(self, item, badge_positions=None, position='northwest') -> Dict[str, Any]:
+        """Everything that decides how the poster looks, gathered without rendering.
+
+        ``problem`` is set to (counter, reason) when there is nothing to render."""
+        episode = getattr(item, 'type', None) == 'episode'
+        guids = getattr(item, 'guids', []) or []
+        tmdb_id = self._extract_tmdb_id(guids)
+        imdb_id = self._extract_imdb_id(guids)
+        inputs = {'episode': episode, 'position': position, 'problem': None}
+        if not episode and not tmdb_id and not imdb_id:
+            inputs['problem'] = ('failed', 'Keine TMDB- oder IMDb-ID')
+            return inputs
+
+        ratings = self._extract_plex_ratings(item)
+        if imdb_id in self.imdb_ratings:
+            ratings['imdb'] = self.imdb_ratings[imdb_id]
+        if not episode:
+            # API fallbacks only for what Plex does not carry (answers are cached)
+            if 'tmdb' not in ratings and tmdb_id:
+                media_type = 'tv' if self.library.type == 'show' else 'movie'
+                data = self.rating_fetcher.fetch_tmdb_rating(tmdb_id, media_type=media_type)
+                if data and data.get('rating', 0) > 0:
+                    ratings['tmdb'] = data['rating']
+            if imdb_id and 'imdb' not in ratings:
+                data = self.rating_fetcher.fetch_omdb_rating(imdb_id)
+                try:
+                    ratings['imdb'] = float(data['imdb_rating'])
+                except (TypeError, KeyError, ValueError):
+                    pass
+            if imdb_id and ('rt_critic' not in ratings or 'rt_audience' not in ratings):
+                data = self.rating_fetcher.fetch_mdblist_rating(imdb_id) or {}
+                for key in ('rt_critic', 'rt_audience'):
+                    if key not in ratings and data.get(key):
+                        ratings[key] = data[key]
+        ratings = {k: v for k, v in ratings.items() if self.rating_sources.get(k, True) and v}
+
+        media = self.media_overlay
+        source = source_label(item, media) if media.get('source', False) else None
+        languages = audio_languages(item) if episode and media.get('languages', False) else []
+        status = None
+        if getattr(item, 'type', None) == 'show' and media.get('status', False) and tmdb_id:
+            status = show_status_label(self.rating_fetcher.fetch_tmdb_status(tmdb_id), media)
+        style, positions = self.badge_style, badge_positions
+        if episode:
+            style, positions, media = episode_overlay_options(style, positions, media)
+        inputs.update(ratings=ratings, source=source, languages=languages, status=status,
+                      style=style, positions=positions, media=media)
+        if not ratings and not (source or languages or status):
+            inputs['problem'] = (('skipped', 'Keine Wertungen oder Badges') if episode
+                                 else ('failed', 'Keine Wertungen verfügbar'))
+        return inputs
+
+    @staticmethod
+    def render_hash(inputs, original_path=None) -> str:
+        """Fingerprint of the rendered result: inputs, original image and renderer version."""
+        import hashlib
+        import json
+        digest = hashlib.sha256()
+        digest.update(f'renderer:{RENDERER_VERSION}'.encode())
+        digest.update(json.dumps({k: v for k, v in inputs.items() if k != 'problem'},
+                                 sort_keys=True, default=str).encode())
+        if original_path is not None and Path(original_path).is_file():
+            digest.update(Path(original_path).read_bytes())
+        return digest.hexdigest()
+
+    def render_image(self, original, output, inputs):
+        """Compose overlay image from an original backup according to inputs."""
+        from PIL import Image
+        output = Path(output)
+        canvas = output.with_name(output.stem + '.canvas.jpg')
+        try:
+            if inputs['episode']:
+                prepare_episode_canvas(original, canvas)
+            else:
+                prepare_canvas(original, canvas)
+            if inputs['ratings']:
+                self.multi_rating_badge.apply_to_poster(
+                    poster_path=str(canvas), ratings=inputs['ratings'], output_path=str(output),
+                    position=inputs['position'], badge_style=inputs['style'],
+                    badge_positions=inputs['positions'])
+            else:
+                with Image.open(canvas) as img:
+                    img.convert('RGB').save(output, 'JPEG', quality=95)
+            if inputs['source'] or inputs['languages'] or inputs['status']:
+                draw_media_badges(str(output), inputs['source'], inputs['languages'], inputs['media'],
+                                  status=inputs['status'], badge_style=inputs['style'])
+        finally:
+            canvas.unlink(missing_ok=True)
+
     def process_movie(
         self,
         movie,
         position: str = 'northwest',
         force: bool = False,
-        badge_positions: Optional[Dict[str, Dict[str, float]]] = None
+        badge_positions: Optional[Dict[str, Dict[str, float]]] = None,
+        inputs: Optional[Dict[str, Any]] = None,
     ) -> Optional[bool]:
         """
-        Process a single movie: backup, overlay, upload
+        Backup, render and upload one movie, show or episode.
 
-        Args:
-            movie: PlexAPI movie object
-            position: Badge position ('northeast', 'northwest', etc.) - legacy unified mode
-            force: Force reprocessing even if already has overlay
-            badge_positions: Optional dict for individual badge positions
-                           {'tmdb': {'x': 5, 'y': 5}, 'imdb': {'x': 20, 'y': 5}, ...}
-
-        Returns:
-            True if successfully processed
-            None if skipped (already has overlay)
-            False if failed
+        Returns True if uploaded, None if skipped (already has overlay or nothing to show),
+        False if failed. ``self.last_problem`` holds the reason for None/False.
         """
-        if getattr(movie, 'type', None) == 'episode':
-            return self.process_episode(movie, force=force, badge_positions=badge_positions)
+        self.last_problem = None
         try:
-            # Extract IDs - TMDB ID is optional (many TV shows don't have it)
-            tmdb_id = self._extract_tmdb_id(movie.guids)
-            imdb_id = self._extract_imdb_id(movie.guids)
-
-            # Need at least one ID to proceed
-            if not tmdb_id and not imdb_id:
-                logger.warning(f"⚠️  {movie.title}: No TMDB or IMDb ID found")
-                return False
-
-            # Skip if overlay already applied (unless force=True)
             if not force and self.backup_manager.has_overlay(self.library_name, movie):
-                logger.debug(f"⏭️  {movie.title}: Already has overlay, skipping")
-                return None  # Return None to indicate skip (not success or failure)
-
-            # PRIORITY 1: Try to get ALL ratings from Plex's own metadata FIRST (fastest, most reliable)
-            # This works for both movies AND TV shows and has ~100% coverage
-            plex_ratings = self._extract_plex_ratings(movie)
-
-            # Build ratings dict - start with what Plex has
-            ratings = {}
-
-            # Use Plex's TMDB rating if available
-            if 'tmdb' in plex_ratings:
-                ratings['tmdb'] = plex_ratings['tmdb']
-            elif tmdb_id:  # Only try TMDB API if we have a TMDB ID
-                # PRIORITY 2: Fall back to TMDB API only if Plex doesn't have it
-                # Determine media type (movie vs TV show)
-                media_type = 'tv' if self.library.type == 'show' else 'movie'
-                rating_data = self.rating_fetcher.fetch_tmdb_rating(tmdb_id, media_type=media_type)
-
-                if rating_data and rating_data.get('rating', 0) > 0:
-                    ratings['tmdb'] = rating_data['rating']
-                # Don't fail here - continue to check other rating sources
-
-            # Use Plex's IMDb rating if available
-            if 'imdb' in plex_ratings:
-                ratings['imdb'] = plex_ratings['imdb']
-            if imdb_id in self.imdb_ratings:
-                ratings['imdb'] = self.imdb_ratings[imdb_id]
-
-            # Use Plex's RT scores if available
-            if 'rt_critic' in plex_ratings:
-                ratings['rt_critic'] = plex_ratings['rt_critic']
-            if 'rt_audience' in plex_ratings:
-                ratings['rt_audience'] = plex_ratings['rt_audience']
-
-            # PRIORITY 2: Fall back to API calls for missing ratings (already extracted imdb_id above)
-            if imdb_id:
-                # Get IMDb rating from OMDb if not already from Plex
-                if 'imdb' not in ratings:
-                    imdb_data = self.rating_fetcher.fetch_omdb_rating(imdb_id)
-                    if imdb_data and imdb_data.get('imdb_rating'):
-                        try:
-                            ratings['imdb'] = float(imdb_data['imdb_rating'])
-                        except:
-                            pass
-
-                # Get RT scores from MDBList if not already from Plex
-                if 'rt_critic' not in ratings or 'rt_audience' not in ratings:
-                    mdb_data = self.rating_fetcher.fetch_mdblist_rating(imdb_id)
-                    if mdb_data:
-                        if 'rt_critic' not in ratings and mdb_data.get('rt_critic'):
-                            ratings['rt_critic'] = mdb_data['rt_critic']
-                        if 'rt_audience' not in ratings and mdb_data.get('rt_audience'):
-                            ratings['rt_audience'] = mdb_data['rt_audience']
-
-            # Filter ratings based on user preferences (if specified)
-            if self.rating_sources:
-                ratings = {
-                    k: v for k, v in ratings.items()
-                    if self.rating_sources.get(k, True)  # Default to True if not specified
-                }
-
-            # Check if we have ANY ratings - fail only if all sources are empty/zero
-            if not ratings or all(v == 0 for v in ratings.values()):
-                logger.warning(f"⚠️  {movie.title}: No ratings available from any source")
-                return False
-
-            logger.info(f"Processing: {movie.title} (Ratings: {ratings})")
-
-            if self.dry_run:
-                logger.info(f"[DRY-RUN] Would apply multi-rating overlay to '{movie.title}': {ratings}")
-                return True
-
-            # Get poster URL
-            poster_url = movie.posterUrl
-            if not poster_url:
-                logger.warning(f"⚠️  {movie.title}: No poster URL")
-                return False
-
-            # Get or create backup (never re-download if backup exists)
-            # When force=True, we just use existing backup to apply fresh overlay
-            original_path = self.backup_manager.backup_poster(
-                self.library_name, movie, poster_url, self.plex_token, metadata={'ratings': ratings})
-
-            if not original_path:
-                logger.error(f"✗ {movie.title}: Failed to backup poster")
-                return False
-
-            # Compose on the same fixed portrait canvas used by the preview.
-            canvas_path = self.temp_dir / f"{movie.ratingKey}_canvas.jpg"
-            prepare_canvas(original_path, canvas_path)
-            # Apply multi-rating overlay
-            overlay_path = self.temp_dir / f"{movie.ratingKey}_overlay.jpg"
-            self.multi_rating_badge.apply_to_poster(
-                poster_path=str(canvas_path),
-                ratings=ratings,
-                output_path=str(overlay_path),
-                position=position,
-                badge_style=self.badge_style,  # Pass custom styling options
-                badge_positions=badge_positions  # Pass individual badge positions if provided
-            )
-
-            source = source_label(movie, self.media_overlay) if self.media_overlay.get('source', False) else None
-            languages = audio_languages(movie) if movie.type == 'episode' and self.media_overlay.get('languages', False) else []
-            status = None
-            if getattr(movie, 'type', None) == 'show' and self.media_overlay.get('status', False) and tmdb_id:
-                status = show_status_label(self.rating_fetcher.fetch_tmdb_status(tmdb_id), self.media_overlay)
-            if source or languages or status:
-                draw_media_badges(str(overlay_path), source, languages, self.media_overlay,
-                                  status=status, badge_style=self.badge_style)
-
-            # Save overlay version to backup
-            self.backup_manager.save_overlay_poster(self.library_name, movie, str(overlay_path))
-
-            # Upload to Plex
-            movie.uploadPoster(filepath=str(overlay_path))
-            rating_str = ', '.join([f'{k.upper()}: {v:.1f}' for k, v in ratings.items()])
-            logger.info(f"✓ {movie.title}: Multi-rating overlay applied ({rating_str})")
-
-            # Cleanup temp file
-            overlay_path.unlink()
-            canvas_path.unlink(missing_ok=True)
-
-            return True
-
-        except Exception as e:
-            logger.error(f"✗ {movie.title}: Error - {e}")
-            return False
-
-    def process_episode(self, episode, force=False, badge_positions=None):
-        """Render one episode thumbnail using a rating-key isolated original backup."""
-        try:
-            from PIL import Image
-            import requests
-            from src.rating_overlay.poster_storage import paths, replace_image, write_metadata
-            key = str(episode.ratingKey)
-            original, rendered = paths(self.backup_manager, self.library_name, episode)
-            backup = original.parent
-            backup.mkdir(parents=True, exist_ok=True)
-            pending = backup / f'.{key}-overlay.pending.jpg'
-            canvas = backup / f'.{key}-canvas.pending.jpg'
-            if rendered.exists() and not force:
+                self.last_problem = 'Overlay bereits vorhanden'
                 return None
-            if not original.exists():
-                thumb = getattr(episode, 'thumb', None)
-                if not thumb:
-                    logger.warning('Episode %s has no thumbnail', key)
-                    return False
-                response = self.server._session.get(
-                    self.server.url(thumb),
-                    headers={'X-Plex-Token': self.plex_token},
-                    timeout=30,
-                )
-                response.raise_for_status()
-                replace_image(original, response.content)
-                write_metadata(self.backup_manager, self.library_name, episode)
-            ratings = self._extract_plex_ratings(episode)
-            imdb_id = self._extract_imdb_id(getattr(episode, 'guids', []) or [])
-            if imdb_id in self.imdb_ratings:
-                ratings['imdb'] = self.imdb_ratings[imdb_id]
-            ratings = {k: v for k, v in ratings.items() if self.rating_sources.get(k, True)}
-            source = source_label(episode, self.media_overlay) if self.media_overlay.get('source', False) else None
-            languages = audio_languages(episode) if self.media_overlay.get('languages', False) else []
-            episode_style, episode_positions, episode_media = episode_overlay_options(
-                self.badge_style, badge_positions, self.media_overlay)
-            if not ratings and not source and not languages:
-                return None
+            inputs = inputs or self.collect_inputs(movie, badge_positions, position)
+            if inputs['problem']:
+                counter, self.last_problem = inputs['problem']
+                logger.warning(f"⚠️  {movie.title}: {self.last_problem}")
+                return None if counter == 'skipped' else False
+
+            logger.info(f"Processing: {movie.title} (Ratings: {inputs['ratings']})")
             if self.dry_run:
                 return True
-            prepare_episode_canvas(original, canvas)
-            if ratings:
-                self.multi_rating_badge.apply_to_poster(
-                    str(canvas), ratings, str(pending), badge_style=episode_style,
-                    badge_positions=episode_positions)
+
+            if inputs['episode']:
+                source = getattr(movie, 'thumb', None)
+                source = self.server.url(source, includeToken=True) if source else None
             else:
-                with Image.open(canvas) as img:
-                    img.convert('RGB').save(pending, 'JPEG', quality=95)
-            if source or languages:
-                draw_media_badges(str(pending), source, languages, episode_media, badge_style=episode_style)
-            episode.uploadPoster(filepath=str(pending))
-            pending.replace(rendered)
-            return True
-        except Exception:
-            logger.exception('Failed to process episode %s', getattr(episode, 'ratingKey', '?'))
-            if 'pending' in locals():
+                source = movie.posterUrl
+            if not source:
+                self.last_problem = 'Kein Poster in Plex'
+                return False
+            original = self.backup_manager.backup_poster(
+                self.library_name, movie, source, self.plex_token,
+                metadata={'ratings': inputs['ratings']})
+            if not original:
+                self.last_problem = 'Original konnte nicht gesichert werden'
+                return False
+
+            _, overlay = self.backup_manager.item_paths(self.library_name, movie)
+            pending = overlay.with_name(f'.{movie.ratingKey}-overlay.pending.jpg')
+            try:
+                self.render_image(original, pending, inputs)
+                movie.uploadPoster(filepath=str(pending))
+                pending.replace(overlay)
+            finally:
                 pending.unlink(missing_ok=True)
+            logger.info(f"✓ {movie.title}: overlay applied ({inputs['ratings']})")
+            return True
+        except Exception as e:
+            logger.exception(f"✗ {movie.title}: Error - {e}")
+            self.last_problem = str(e)
             return False
-        finally:
-            if 'canvas' in locals():
-                canvas.unlink(missing_ok=True)
 
     def process_library(
         self,
