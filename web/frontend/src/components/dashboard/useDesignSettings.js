@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { LANGUAGE_PX, RATING_PX, TEXT_BOX_PX, textBoxWidth } from './KometaDemo'
 
 // Design state of the dashboard (badges, media labels, rating sources) and how it is
 // saved: globally or as a library's own profile (see docs/KONZEPT.md, section 7).
@@ -155,6 +156,9 @@ export default function useDesignSettings() {
     persistBadgeSettings({ badge_style: updated })
   }
 
+  const kometa = (badgeStyle.variant ?? badgeStyle.imdb_variant ?? 'kometa') === 'kometa'
+  const kometaScale = (badgeStyle.kometa_scale ?? badgeStyle.imdb_scale ?? 100) / 100
+
   const handlePosterDrag = (e, badgeSource, episodeCanvas = false) => {
     if (!activeDragBadge && !badgeSource) return  // Not dragging
 
@@ -174,8 +178,12 @@ export default function useDesignSettings() {
       const fontPx = width * sizePercent / 100 * (badgeStyle.font_size_multiplier ?? 1)
       const label = source === 'status_position' ? (mediaOverlay.status_labels?.ended ?? 'Abgeschlossen')
         : source === 'source_position' ? (mediaOverlay.source_labels?.bluray ?? 'BluRay') : 'DE EN'
-      const labelWidth = source === 'languages_position' ? fontPx * 3.8 : fontPx * (label.length * .62 + .7)
-      const labelHeight = source === 'languages_position' ? fontPx * 2.8 : fontPx * 1.6
+      const labelWidth = kometa
+        ? (source === 'languages_position' ? LANGUAGE_PX.width : textBoxWidth(label, source === 'status_position')) * kometaScale
+        : source === 'languages_position' ? fontPx * 3.8 : fontPx * (label.length * .62 + .7)
+      const labelHeight = kometa
+        ? (source === 'languages_position' ? LANGUAGE_PX.spacing + LANGUAGE_PX.height : TEXT_BOX_PX.height) * kometaScale
+        : source === 'languages_position' ? fontPx * 2.8 : fontPx * 1.6
       const x = source === 'languages_position'
         ? width - clickX / rect.width * width - labelWidth / 2
         : clickX / rect.width * width - labelWidth / 2
@@ -191,11 +199,10 @@ export default function useDesignSettings() {
 
     const canvasWidth = episodeCanvas ? 1920 : 1000
     const canvasHeight = episodeCanvas ? 1080 : 1500
-    // Kometa's IMDb badge has the same pixel size on poster and episode canvas
-    const kometaImdb = source === 'imdb' && (badgeStyle.imdb_variant ?? 'kometa') === 'kometa'
-    const badgeWidth = kometaImdb ? 191 * (badgeStyle.imdb_scale ?? 100) / 100
+    // Kometa's rating badges have the same pixel size on poster and episode canvas
+    const badgeWidth = kometa ? RATING_PX * kometaScale
       : (episodeCanvas ? mediaOverlay.episode_badge_percent ?? 9 : badgeStyle.individual_badge_size || 9) / 100 * canvasWidth
-    const badgeHeight = kometaImdb ? badgeWidth : badgeWidth * (source === 'imdb' ? 1.04 : 1.4)
+    const badgeHeight = kometa ? badgeWidth : badgeWidth * (source === 'imdb' ? 1.04 : 1.4)
     const xPx = Math.round(Math.max(0, Math.min(canvasWidth - badgeWidth, clickX / rect.width * canvasWidth - badgeWidth / 2)))
     const yPx = Math.round(Math.max(0, Math.min(canvasHeight - badgeHeight, clickY / rect.height * canvasHeight - badgeHeight / 2)))
     setAlignmentGuides([])

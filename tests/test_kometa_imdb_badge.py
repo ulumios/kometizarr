@@ -18,7 +18,8 @@ class KometaBadgeTest(unittest.TestCase):
         self.assertEqual(badge.size, (191, 191))
         self.assertEqual(badge.getpixel((95, 3))[3], 0x99)          # #00000099 background
         self.assertEqual(badge.getpixel((0, 0))[3], 0)              # rounded corner (radius 30)
-        logo = self.badges.kometa_images['IMDb']
+        from src.rating_overlay.kometa_style import image
+        logo = image('IMDb')
         # logo 149x75 on top: box is centered, logo wider than "8.4" text
         self.assertEqual(badge.getpixel((15 + 5 + 74, 15 + 5 + 40))[:3], logo.getpixel((74, 40))[:3])
 

@@ -114,18 +114,21 @@ def adopt_kometa_original(manager, item):
         return False
 
 
-def load_top250(rating_sources, badge_style):
-    """IMDb Top 250 IDs when the Kometa IMDb badge with Top 250 image is in use."""
+def load_top_lists(manager, rating_sources, badge_style):
+    """IMDb Top 250 and RT Certified Fresh / Verified Hot when Kometa's Top images are used."""
+    from src.rating_overlay.multi_rating_badge import badge_variant
     style = badge_style or {}
-    if (rating_sources or {}).get('imdb', True) is False or style.get('imdb_variant', 'kometa') != 'kometa' \
-            or style.get('imdb_top250_logo', True) is False:
-        return set()
-    from src.rating_overlay.imdb_top250 import top250_ids
+    sources = rating_sources or {}
+    if badge_variant(style) != 'kometa' or style.get('top_logos', style.get('imdb_top250_logo', True)) is False:
+        return
+    from src.rating_overlay.imdb_top250 import rt_top_ids, top250_ids
     try:
-        return top250_ids()
+        if sources.get('imdb', True):
+            manager.imdb_top250 = top250_ids()
+        if sources.get('rt_critic', True) or sources.get('rt_audience', True):
+            manager.rt_top = rt_top_ids()
     except Exception:
-        logger.exception('Could not load the IMDb Top 250')
-        return set()
+        logger.exception('Could not load the Top lists')
 
 
 STEP_LABELS = {'capture_manual': 'manuelles Plex-Poster übernehmen', 'capture_current': 'aktuelles Plex-Poster übernehmen',
@@ -209,7 +212,7 @@ async def run_overlay(request):
         if imdb_cache:
             imdb_ids = {manager._extract_imdb_id(getattr(item, 'guids', []) or []) for item in all_items}
             manager.imdb_ratings = imdb_cache.ratings(imdb_ids - {None})
-        manager.imdb_top250 = await asyncio.to_thread(load_top250, request.rating_sources, request.badge_style)
+        await asyncio.to_thread(load_top_lists, manager, request.rating_sources, request.badge_style)
 
         logger.info(f"🎬 Processing started: {request.library_name} ({len(all_items)} items)")
 
@@ -381,7 +384,7 @@ def preview_posters(request):
         if request.include_episodes and manager.library.type == 'show':
             all_items += manager.library.all(libtype='episode')
         sample = random.sample(all_items, min(request.count, len(all_items)))
-        manager.imdb_top250 = load_top250(request.rating_sources, manager.badge_style)
+        load_top_lists(manager, request.rating_sources, manager.badge_style)
         if (settings.get('imdb_direct') or {}).get('enabled'):
             from src.rating_overlay.imdb_cache import ImdbRatingCache
             cache = ImdbRatingCache()

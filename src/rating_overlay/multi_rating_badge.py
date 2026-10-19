@@ -10,6 +10,19 @@ from typing import Tuple, Dict, Optional, List, Any
 from pathlib import Path
 
 
+# Style flags set per item by PlexPosterManager.collect_inputs
+TOP_FLAGS = {'imdb': 'imdb_top250', 'rt_critic': 'rt_critic_top', 'rt_audience': 'rt_audience_top'}
+
+
+def badge_variant(style):
+    """'kometa' draws every badge like Kometa's defaults, 'compact' the earlier look."""
+    return style.get('variant') or style.get('imdb_variant') or 'kometa'
+
+
+def badge_scale(style):
+    return style.get('kometa_scale', style.get('imdb_scale', 100))
+
+
 class MultiRatingBadge:
     """Generate rating badges with multiple sources (TMDB, IMDb, RT)"""
 
@@ -49,12 +62,6 @@ class MultiRatingBadge:
 
         # Load logos
         self.logos = self._load_logos()
-        kometa_dir = self.assets_dir / 'kometa'
-        self.kometa_images = {}
-        for name in ('IMDb', 'IMDbTop'):
-            path = kometa_dir / f'{name}.png'
-            self.kometa_images[name] = Image.open(path).convert('RGBA') if path.exists() else None
-        self.kometa_font_path = self.assets_dir.parent / 'fonts' / 'Inter-Bold.ttf'
 
     def _load_logos(self) -> Dict[str, Optional[Image.Image]]:
         """Load rating source logos"""
@@ -227,10 +234,12 @@ class MultiRatingBadge:
         """
         poster_width, poster_height = poster_size
 
+        style = badge_style or {}
+        if badge_variant(style) == 'kometa':
+            from . import kometa_style
+            return kometa_style.rating_badge(source, rating, poster_size, badge_scale(style),
+                                             top=bool(style.get(TOP_FLAGS.get(source))))
         if source == 'imdb':
-            style = badge_style or {}
-            if style.get('imdb_variant', 'kometa') == 'kometa':
-                return self.create_kometa_imdb_badge(rating, poster_size, style)
             return self._create_imdb_badge(rating, poster_width, style)
 
         # Apply custom styling or use defaults
@@ -380,60 +389,12 @@ class MultiRatingBadge:
 
         return badge
 
-    # Kometa's default rating overlay (defaults/overlays/ratings.yml, vertical alignment) in
-    # pixels of its canvas: 1000x1500 for posters, 1920x1080 for episodes.
-    KOMETA = {'back_width': 160, 'back_height': 160, 'back_padding': 15, 'back_radius': 30,
-              'back_color': (0, 0, 0, 0x99), 'font_size': 63, 'font_color': (255, 255, 255, 255),
-              'addon_offset': 15}
-
     def create_kometa_imdb_badge(self, rating: float, poster_size: Tuple[int, int],
                                  style: Dict[str, Any]) -> Image.Image:
-        """IMDb rating exactly like Kometa: logo on top, score below, centered in a 160x160 box.
-
-        Follows Kometa's Overlay.get_backdrop with addon_position 'top' and back_align 'center'.
-        ``style['imdb_top250']`` switches to Kometa's Top 250 image; ``imdb_scale`` (percent)
-        resizes the whole badge, 100 = Kometa. The returned image includes the padding, so
-        its top-left corner is the badge position."""
-        canvas_width = poster_size[0]
-        reference = 1920 if poster_size[0] > poster_size[1] else 1000
-        scale = canvas_width / reference * float(style.get('imdb_scale', 100)) / 100
-        k = self.KOMETA
-        px = lambda value: max(1, round(value * scale))
-        back_w, back_h, pad = px(k['back_width']), px(k['back_height']), px(k['back_padding'])
-        image = self.kometa_images.get('IMDbTop' if style.get('imdb_top250') else 'IMDb') \
-            or self.kometa_images.get('IMDb')
-        try:
-            font = ImageFont.truetype(str(self.kometa_font_path), px(k['font_size']))
-        except OSError:
-            font = ImageFont.truetype(self.FONT_PATHS['DejaVu Sans Bold'], px(k['font_size']))
-
-        text = f'{rating:.1f}'
-        _, _, text_w, text_h = ImageDraw.Draw(Image.new('RGBA', (1, 1))).textbbox((0, 0), text, font=font, anchor='lt')
-        if image is not None:
-            image = image.resize((px(image.width), px(image.height)), Image.Resampling.LANCZOS)
-            image_w, image_h = image.size
-            box_w, box_h = max(text_w, image_w), text_h + image_h + px(k['addon_offset'])
-        else:
-            image_w = image_h = 0
-            box_w, box_h = text_w, text_h
-
-        # Kometa's rectangle includes both end coordinates, so it is one pixel wider than the box
-        badge = Image.new('RGBA', (back_w + 2 * pad + 1, back_h + 2 * pad + 1), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(badge)
-        draw.rounded_rectangle((0, 0, back_w + 2 * pad, back_h + 2 * pad), radius=px(k['back_radius']),
-                               fill=k['back_color'])
-        main_x = pad + (back_w - box_w) // 2
-        main_y = pad + (back_h - box_h) // 2
-        addon_x, addon_y = main_x, main_y
-        if image is not None:
-            if text_w < image_w:
-                main_x += (image_w - text_w) / 2
-            elif text_w > image_w:
-                addon_x += (text_w - image_w) / 2
-            main_y += image_h + px(k['addon_offset'])
-            badge.alpha_composite(image, (int(addon_x), int(addon_y)))
-        draw.text((int(main_x), int(main_y)), text, font=font, fill=k['font_color'], anchor='lt')
-        return badge
+        """IMDb rating exactly like Kometa (see kometa_style.rating_badge)."""
+        from . import kometa_style
+        return kometa_style.rating_badge('imdb', rating, poster_size, badge_scale(style),
+                                         top=bool(style.get('imdb_top250')))
 
     def _create_imdb_badge(self, rating: float, poster_width: int, style: Dict[str, Any]) -> Image.Image:
         """Compact IMDb mark and score on one dark rounded tile."""

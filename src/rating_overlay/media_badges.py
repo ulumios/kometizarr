@@ -106,6 +106,35 @@ def draw_media_badges(path, source=None, languages=(), settings=None, status=Non
             return round(width * edge), round(height * edge)
         pos = settings.get(key) or {}
         return max(0, int(pos.get('x', margin))), max(0, int(pos.get('y', margin)))
+    from .multi_rating_badge import badge_scale, badge_variant
+    if badge_variant(badge_style) == 'kometa':
+        # Kometa's video_format / status / languages overlays, at the configured positions
+        from . import kometa_style
+        scale = badge_scale(badge_style)
+
+        def place(badge_image, key, left):
+            bw, bh = badge_image.size
+            dx, dy = offset(key)
+            x = max(0, min(width - bw, dx if left else width - dx - bw))
+            y = max(0, min(height - bh, height - dy - bh))
+            layer.alpha_composite(badge_image, (x, y))
+        if source:
+            place(kometa_style.text_badge(source, (width, height), scale), 'source_position', True)
+        if status and not episode:
+            place(kometa_style.text_badge(status, (width, height), scale, status=True), 'status_position', True)
+        if languages:
+            rows, spacing = kometa_style.language_rows([code for code, _ in languages], (width, height), scale,
+                                                       settings.get('episode_english_flag', 'US'))
+            row_w = max(row.width for row in rows)
+            total_h = spacing * (len(rows) - 1) + rows[-1].height
+            dx, dy = offset('languages_position')
+            x = max(0, min(width - row_w, width - dx - row_w))
+            top = max(0, min(height - total_h, height - dy - total_h))
+            for number, row in enumerate(rows):
+                layer.alpha_composite(row, (x, top + number * spacing))
+        Image.alpha_composite(image, layer).convert('RGB').save(path, 'JPEG', quality=95)
+        return
+
     def badge(label, left, key='source_position'):
         box = draw.textbbox((0, 0), label, font=font)
         pad = max(2, size // 5) if episode else max(5, size // 3)

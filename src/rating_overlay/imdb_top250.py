@@ -1,7 +1,9 @@
-"""IMDb Top 250 (movies and TV shows), fetched like Kometa's imdb_chart builder.
+"""Lists that switch a rating to Kometa's "Top" image.
 
-Kometa shows rating/IMDbTop.png instead of rating/IMDb.png for these titles. The lists are
-cached for a day; when IMDb is unreachable the last known lists are used."""
+- IMDb Top 250 (movies and TV), fetched like Kometa's imdb_chart builder → IMDbTop.png
+- Rotten Tomatoes Certified Fresh / Verified Hot from Kometa's MDBList lists → RT-*-Top.png
+
+Lists are cached for a day; when a source is unreachable the last known list is used."""
 
 import json
 import logging
@@ -25,26 +27,50 @@ def fetch_chart(chart_type, session=requests):
     return [edge['node']['id'] for edge in edges]
 
 
-def top250_ids(cache_db=None, fetch=fetch_chart):
-    """Set of IMDb IDs in the movie and TV Top 250; never raises."""
+def _daily_list(key, load, minimum, cache_db=None):
+    """IDs from ``load()``, cached for a day; the last known IDs when loading fails."""
     from src.rating_overlay.api_cache import ApiCache
     cache = ApiCache(cache_db) if cache_db else ApiCache()
     try:
-        row = cache.db.execute("SELECT value, fetched_at FROM api_cache WHERE key='imdb-top250'").fetchone()
+        row = cache.db.execute('SELECT value, fetched_at FROM api_cache WHERE key=?', (key,)).fetchone()
         stored = json.loads(row[0]) if row and row[0] else None
         if stored and time.time() - row[1] < MAX_AGE:
             return set(stored)
         try:
-            ids = [imdb_id for chart in CHARTS.values() for imdb_id in fetch(chart)]
-            if len(ids) < 400:  # both charts have 250 entries; refuse a truncated answer
-                raise ValueError(f'unexpected IMDb chart size {len(ids)}')
+            ids = load()
+            if len(ids) < minimum:  # refuse a truncated answer
+                raise ValueError(f'unexpected list size {len(ids)}')
         except Exception as exc:
-            logger.warning('IMDb Top 250 not available (%s); using %s', exc,
-                           'the last known lists' if stored else 'no Top 250 marker')
+            logger.warning('%s not available (%s); using %s', key, exc,
+                           'the last known list' if stored else 'no marker')
             return set(stored or [])
         with cache.db:
-            cache.db.execute('INSERT OR REPLACE INTO api_cache VALUES (?, ?, ?)',
-                             ('imdb-top250', json.dumps(ids), time.time()))
+            cache.db.execute('INSERT OR REPLACE INTO api_cache VALUES (?, ?, ?)', (key, json.dumps(ids), time.time()))
         return set(ids)
     finally:
         cache.close()
+
+
+def top250_ids(cache_db=None, fetch=fetch_chart):
+    """Set of IMDb IDs in the movie and TV Top 250 (both charts have 250 entries)."""
+    return _daily_list('imdb-top250', lambda: [i for chart in CHARTS.values() for i in fetch(chart)],
+                       400, cache_db)
+
+
+# Kometa marks Certified Fresh / Verified Hot with these MDBList lists (ratings.yml mdblist_top)
+RT_LISTS = {'rt_critic': ('certifiedfreshmovies', 'certifiedfreshshows'),
+            'rt_audience': ('verifiedhotmovies', 'verifiedhotshows')}
+
+
+def fetch_mdblist(name, session=requests):
+    response = session.get(f'https://mdblist.com/lists/k0meta/{name}/json', timeout=20,
+                           headers={'User-Agent': 'Kometizarr'})
+    response.raise_for_status()
+    return [entry['imdb_id'] for entry in response.json() if entry.get('imdb_id')]
+
+
+def rt_top_ids(cache_db=None, fetch=fetch_mdblist):
+    """{'rt_critic': Certified Fresh IDs, 'rt_audience': Verified Hot IDs}."""
+    return {source: _daily_list(f'rt-top:{source}', lambda names=names: [i for n in names for i in fetch(n)],
+                                10, cache_db)
+            for source, names in RT_LISTS.items()}

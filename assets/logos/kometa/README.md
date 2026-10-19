@@ -1,9 +1,11 @@
 # Kometa rating images
 
-`IMDb.png` and `IMDbTop.png` are taken unchanged from Kometa
-(`defaults/overlays/images/rating/`, https://github.com/Kometa-Team/Kometa) so that
-Kometizarr's IMDb badge looks exactly like Kometa's default rating overlay.
-`IMDbTop.png` is the image Kometa uses for titles in IMDb's Top 250.
+The rating images (`IMDb*.png`, `TMDb.png`, `RT-*.png`) come unchanged from Kometa's
+`defaults/overlays/images/rating/`, the round flags in `flags/` from
+`defaults/overlays/images/flag/round/` (https://github.com/Kometa-Team/Kometa), so that
+Kometizarr's badges look exactly like Kometa's default overlays.
+`IMDbTop.png` marks IMDb's Top 250, `RT-Crit-Top.png` Certified Fresh and
+`RT-Aud-Top.png` Verified Hot.
 
 Kometa is released under the MIT License:
 
@@ -30,4 +32,4 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-The font `assets/fonts/Inter-Bold.ttf` (Inter, used by Kometa) is licensed under the SIL Open Font License 1.1, see `assets/fonts/Inter-OFL.txt`.
+The fonts `assets/fonts/Inter-Bold.ttf` and `Inter-Medium.ttf` (Inter, used by Kometa) are licensed under the SIL Open Font License 1.1, see `assets/fonts/Inter-OFL.txt`.

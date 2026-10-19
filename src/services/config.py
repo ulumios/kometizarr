@@ -112,9 +112,9 @@ DEFAULT_BADGE_STYLE = {
     "rating_color": "#FFFFFF",
     "background_opacity": 215,
     "font_family": "Liberation Sans Bold",
-    "imdb_variant": "kometa",       # IMDb badge exactly like Kometa's rating overlay
-    "imdb_top250_logo": True,       # Kometa's "250" image for titles in IMDb's Top 250
-    "imdb_scale": 100,              # percent of Kometa's size
+    "variant": "kometa",            # every badge exactly like Kometa's default overlays
+    "top_logos": True,              # Kometa's Top images: IMDb Top 250, Certified Fresh, Verified Hot
+    "kometa_scale": 100,            # percent of Kometa's size
 }
 
 DEFAULT_RATING_SOURCES = {
