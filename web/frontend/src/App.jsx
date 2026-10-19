@@ -5,6 +5,7 @@ import ProcessingProgress from './components/ProcessingProgress'
 import Settings from './components/Settings'
 import LibraryBrowser from './components/LibraryBrowser'
 import Tasks from './components/Tasks'
+import Maintenance from './components/Maintenance'
 
 function App() {
   const [processing, setProcessing] = useState(false)
@@ -107,7 +108,7 @@ function App() {
           <>
             {/* Tabs */}
             <div className="mb-6 border-b border-gray-700">
-              <nav className="flex space-x-8">
+              <nav className="flex space-x-6 overflow-x-auto whitespace-nowrap">
                 <button
                   onClick={() => setActiveTab('overlays')}
                   className={`py-4 px-2 border-b-2 font-medium text-sm transition ${
@@ -138,6 +139,10 @@ function App() {
                   className={`py-4 px-2 border-b-2 font-medium text-sm transition ${activeTab === 'tasks' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-300'}`}>
                   📋 Aufgaben
                 </button>
+                <button onClick={() => setActiveTab('maintenance')}
+                  className={`py-4 px-2 border-b-2 font-medium text-sm transition ${activeTab === 'maintenance' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-300'}`}>
+                  🧰 Wartung
+                </button>
                 <button
                   onClick={() => setActiveTab('settings')}
                   className={`py-4 px-2 border-b-2 font-medium text-sm transition ${
@@ -166,6 +171,8 @@ function App() {
               <LibraryBrowser onStartProcessing={() => { setProgressData(null); setShowProgressBanner(true); setProcessing(true) }} />
             ) : activeTab === 'tasks' ? (
               <Tasks />
+            ) : activeTab === 'maintenance' ? (
+              <Maintenance onOpenTasks={() => setActiveTab('tasks')} />
             ) : activeTab === 'collections' ? (
               <Collections selectedLibrary={selectedLibrary} />
             ) : (

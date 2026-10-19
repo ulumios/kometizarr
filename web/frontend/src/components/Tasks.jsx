@@ -5,6 +5,8 @@ const names = {
   imdb: 'IMDb-Wertungen aktualisieren', selected_imdb: 'Ausgewählte IMDb-Wertungen',
   conflict: 'Kometa-Konflikte bearbeiten', webhook: 'Plex-Webhook',
   fresh_posters: 'Frische Plex-Poster', library_scan: 'Bibliothek scannen', plan: 'Vorschau eines Laufs',
+  backup_audit: 'Backups prüfen', backup_cleanup: 'Verwaiste Backups löschen',
+  plex_uploads: 'Alte Plex-Uploads', plex_maintenance: 'Plex-Wartung',
 }
 
 const statusText = { queued: 'Wartet', running: 'Läuft', completed: 'Fertig', failed: 'Fehlgeschlagen' }
@@ -28,6 +30,20 @@ function TaskProgress({ task }) {
     {details.join(' · ')}
     {task.status === 'running' && <div className="bg-gray-700 rounded h-1.5 mt-1"><div className="bg-blue-500 h-1.5 rounded" style={{ width: `${percent}%` }} /></div>}
   </div>
+}
+
+const mib = bytes => `${((bytes || 0) / 1048576).toFixed(1)} MiB`
+
+// One line for maintenance tasks, from the numbers they store in progress.extra.
+function MaintenanceResult({ task }) {
+  const extra = task.progress?.extra || {}
+  if (task.kind === 'plex_uploads' && extra.files !== undefined)
+    return <p className="mt-1 text-xs text-gray-300">{extra.files} alte Uploads ({mib(extra.bytes)}) {extra.dry_run ? 'gefunden (Trockenlauf)' : 'gelöscht'}</p>
+  if (task.kind === 'backup_cleanup' && extra.deleted)
+    return <p className="mt-1 text-xs text-gray-300">{extra.deleted.length} Ordner gelöscht, {mib(extra.freed_bytes)} frei</p>
+  if (task.kind === 'backup_audit' && extra.reports)
+    return <p className="mt-1 text-xs text-gray-300">{extra.reports.map(r => `${r.library}: ${r.error ? 'Fehler' : `${r.orphan_count} verwaist`}`).join(' · ')}</p>
+  return null
 }
 
 // Summary of a finished preview: how many items end up in which outcome.
@@ -73,6 +89,7 @@ export default function Tasks() {
         {task.error && <p className="text-red-300 text-xs">{task.error}</p>}
         <TaskProgress task={task} />
         <PlanSummary task={task} />
+        <MaintenanceResult task={task} />
         <div className="flex gap-2 mt-2">
           {task.kind === 'plan' && task.status === 'completed' &&
             <button onClick={() => follow(task, 'run-plan')} className="bg-blue-600 hover:bg-blue-700 rounded px-3 py-1 text-xs">Plan ausführen</button>}

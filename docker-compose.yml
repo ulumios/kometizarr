@@ -12,6 +12,8 @@ services:
       - ./data/backups:/backups  # Poster backups (PERSISTENT - survives reboots)
       # Optional: Kometa config folder (read-only) to reuse its original posters
       # - /path/to/kometa/config:/kometa:ro
+      # Optional: "Plex Media Server" data folder, only to delete old poster uploads (Wartung)
+      # - "/path/to/Library/Application Support/Plex Media Server:/plex"
       - ./data/temp:/temp  # Temp processing
     environment:
       - PLEX_URL=${PLEX_URL:-http://192.168.1.20:32400}

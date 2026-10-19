@@ -16,9 +16,9 @@ sys.path.insert(0, '/app/kometizarr')
 
 from src.services import config, schedule, tasks  # noqa: E402
 # Importing these registers their task handlers with the worker.
-from src.services import conflicts, imdb, overlay, restore  # noqa: E402,F401
+from src.services import conflicts, imdb, maintenance, overlay, restore  # noqa: E402,F401
 from .routes import collections, conflicts as conflict_routes, imdb as imdb_routes  # noqa: E402
-from .routes import library, runs, settings, webhook  # noqa: E402
+from .routes import library, maintenance as maintenance_routes, runs, settings, webhook  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,7 +57,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for module in (runs, library, collections, settings, imdb_routes, conflict_routes, webhook):
+for module in (runs, library, collections, settings, imdb_routes, conflict_routes, maintenance_routes, webhook):
     app.include_router(module.router)
 
 

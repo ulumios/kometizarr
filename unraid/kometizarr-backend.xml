@@ -38,6 +38,9 @@
   <Config Name="Kometa Config (optional)" Target="/kometa" Default="/mnt/user/appdata/kometa/config" Mode="ro"
     Type="Path" Display="advanced" Required="false" Mask="false"
     Description="Read-only: lets Kometizarr reuse the original posters Kometa saved before drawing its overlays."/>
+  <Config Name="Plex Data (optional)" Target="/plex" Default="/mnt/user/appdata/plex/Library/Application Support/Plex Media Server" Mode="rw"
+    Type="Path" Display="advanced" Required="false" Mask="false"
+    Description="Only needed to delete old, unselected poster uploads from Plex metadata (Maintenance tab)."/>
 
   <!-- Required environment variables -->
   <Config Name="Plex URL" Target="PLEX_URL" Default="http://192.168.1.x:32400" Mode=""

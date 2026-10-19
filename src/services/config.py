@@ -129,6 +129,7 @@ def load_settings() -> dict:
         "kometa_conflicts": {"auto_reset": False},
         "lost_overlay": "adopt",
         "library_profiles": {},
+        "maintenance": {"plex_data_dir": "/plex"},
         "kometa": {"originals_dir": "", "library_map": {}},
         "media_overlay": {"source": True, "languages": True, "status": False, "label_size_percent": 4,
                            "episode_font_percent": 2.8, "font_percent": 4, "opacity": 180,
