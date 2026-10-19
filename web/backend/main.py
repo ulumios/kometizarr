@@ -438,10 +438,13 @@ async def get_library_stats(library_name: str, include_episodes: bool = False):
         backup_dir = _backup_library_dir(library_name)
         processed = 0
         if backup_dir.is_dir():
-            processed = sum(1 for _ in backup_dir.glob('*/poster_overlay.jpg'))
+            # ID layout first, then folders not yet migrated from the title layout
+            processed = sum(1 for _ in backup_dir.glob('*/overlay.jpg'))
+            processed += sum(1 for _ in backup_dir.glob('*/poster_overlay.jpg'))
             if episode_count:
+                processed += sum(1 for _ in backup_dir.glob('*/S*E*/overlay.jpg'))
                 processed += sum(1 for _ in backup_dir.glob('*/S*E*-poster_overlay.jpg'))
-                processed += sum(1 for _ in backup_dir.glob('episodes/*/overlay.jpg'))  # legacy layout
+                processed += sum(1 for _ in backup_dir.glob('episodes/*/overlay.jpg'))
 
         success_rate = (processed / total * 100) if total > 0 else 0
 
@@ -542,26 +545,10 @@ async def restore_library_background(request: ProcessRequest):
 
             if request.reset_to_plex:
                 outcome = _reset_to_plex_poster(request.library_name, item, server, backup_manager)
-            elif item.type == 'episode':
-                original, overlay = paths(backup_manager, request.library_name, item)
-                if not original.is_file():
-                    episode_dir = backup_manager.backup_dir / request.library_name / 'episodes' / str(item.ratingKey)
-                    original, overlay = episode_dir / 'original.jpg', episode_dir / 'overlay.jpg'
-                if not original.is_file() or not overlay.is_file():
-                    outcome = 'skipped'
-                else:
-                    try:
-                        item.uploadPoster(filepath=str(original))
-                        overlay.unlink()
-                        outcome = 'restored'
-                    except Exception:
-                        logger.exception('Failed to restore episode %s', item.ratingKey)
-                        outcome = 'failed'
             # Skip if no backup exists or the original is already shown
-            elif not (backup_manager.has_backup(request.library_name, item.title, year=item.year)
-                      and backup_manager.has_overlay(request.library_name, item.title, year=item.year)):
+            elif not all(path.is_file() for path in paths(backup_manager, request.library_name, item)):
                 outcome = 'skipped'
-            elif backup_manager.restore_original(request.library_name, item.title, item, year=item.year):
+            elif backup_manager.restore_original(request.library_name, item):
                 outcome = 'restored'
             else:
                 outcome = 'failed'
@@ -569,6 +556,7 @@ async def restore_library_background(request: ProcessRequest):
             restore_state[outcome] += 1
             if outcome == 'restored':
                 _invalidate_browse_poster(request.library_name, item.ratingKey)
+                _mark_item(request.library_name, item, status='original', reason=None)
             await broadcast_restore_progress()
 
             # Rate limiting
@@ -628,21 +616,28 @@ def _backup_clean_plex_poster(manager, item):
 
 
 def _record_poster_origin(library_name, item, source):
-    from src.rating_overlay.media_index import MediaIndex
-    index = MediaIndex()
+    from src.rating_overlay.item_state import ItemState
+    from src.rating_overlay.poster_storage import backup_id
+    with ItemState() as store:
+        store.update(library_name, item, original_source=source, backup_id=backup_id(item))
+
+
+def _mark_item(library_name, item, **fields):
+    """Record the outcome for one item in item_state; never breaks a running task."""
     try:
-        index.record_origin(library_name, item, source)
-    finally:
-        index.close()
+        from src.rating_overlay.item_state import ItemState
+        from src.rating_overlay.poster_storage import backup_id
+        with ItemState() as store:
+            store.update(library_name, item, backup_id=backup_id(item), **fields)
+    except Exception:
+        logger.exception('Could not record state for %s', getattr(item, 'ratingKey', '?'))
 
 
 def _known_poster_origin(library_name, item):
-    from src.rating_overlay.media_index import MediaIndex
-    index = MediaIndex()
-    try:
-        return index.origin(library_name, item.ratingKey)
-    finally:
-        index.close()
+    from src.rating_overlay.item_state import ItemState
+    with ItemState() as store:
+        row = store.get(library_name, item.ratingKey)
+    return row['original_source'] if row else None
 
 
 def _is_recorded_conflict(library_name, item):
@@ -772,7 +767,7 @@ async def process_library_background(request: ProcessRequest):
                 original, _ = paths(manager.backup_manager, request.library_name, item)
                 origin = _known_poster_origin(request.library_name, item)
                 had_backup = original.is_file()
-                if origin and origin[0] == 'current_with_label':
+                if origin == 'current_with_label':
                     skip = ('skipped', 'Unsicheres Original: Kometa-Poster', False)
                 elif not had_backup and not _backup_clean_plex_poster(manager, item):
                     skip = ('failed', 'Original-Backup fehlt', False)
@@ -786,6 +781,7 @@ async def process_library_background(request: ProcessRequest):
 
             if skip is not None:
                 counter, reason, remember_conflict = skip
+                _mark_item(request.library_name, item, status=counter, reason=reason)
                 if remember_conflict:
                     await asyncio.to_thread(_remember_kometa_conflict, request.library_name, item)
                 processing_state[counter] += 1
@@ -814,6 +810,8 @@ async def process_library_background(request: ProcessRequest):
                 processing_state["skipped"] += 1
             elif result:
                 processing_state["success"] += 1
+                _mark_item(request.library_name, item, status='rendered', reason=None,
+                           rendered_at=time.time())
                 _invalidate_browse_poster(request.library_name, item.ratingKey)
                 _cache_backup_artwork(request.library_name, item, manager.backup_manager, True)
                 if kometa_label and not imdb_overlay:
@@ -837,6 +835,7 @@ async def process_library_background(request: ProcessRequest):
                                                 manager.imdb_ratings[imdb_id])
             else:
                 processing_state["failed"] += 1
+                _mark_item(request.library_name, item, status='failed', reason='Rendern fehlgeschlagen')
             record('Kometa-Tag nicht entfernt' if label_failed else
                    'gerendert' if result is True else 'übersprungen' if result is None else 'fehlgeschlagen')
 
@@ -1980,6 +1979,12 @@ DEFAULT_RATING_SOURCES = {
 @app.on_event("startup")
 async def startup_event():
     scheduler.start()
+    try:
+        from src.rating_overlay.item_state import ItemState
+        with ItemState() as store:
+            store.migrate(BACKUP_DIR / 'kometa_manual_pending.json')
+    except Exception:
+        logger.exception('Could not migrate Kometizarr state')
     settings = _load_settings()
     # Seed badge defaults so webhook/cron work out of the box without UI interaction
     changed = False

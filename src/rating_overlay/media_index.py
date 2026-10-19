@@ -37,9 +37,6 @@ class MediaIndex:
             CREATE TABLE IF NOT EXISTS artwork (
                 library TEXT NOT NULL, key TEXT NOT NULL, mime TEXT NOT NULL,
                 thumb TEXT, updated_at REAL NOT NULL, PRIMARY KEY(library, key));
-            CREATE TABLE IF NOT EXISTS origins (
-                library TEXT NOT NULL, key TEXT NOT NULL, source TEXT NOT NULL,
-                poster_id TEXT, updated_at REAL NOT NULL, PRIMARY KEY(library, key));
         ''')
         # One-time migration of previously recorded JSON conflicts.
         with self.db:
@@ -173,16 +170,6 @@ class MediaIndex:
     def conflicts(self, library):
         return [json.loads(row[0]) for row in self.db.execute(
             'SELECT payload FROM conflicts WHERE library=? ORDER BY title', (library,))]
-
-    def origin(self, library, key):
-        return self.db.execute('SELECT source, poster_id FROM origins WHERE library=? AND key=?',
-                               (library, str(key))).fetchone()
-
-    def record_origin(self, library, item, source):
-        with self.db:
-            self.db.execute('INSERT OR REPLACE INTO origins VALUES (?, ?, ?, ?, ?)',
-                            (library, str(item.ratingKey), source,
-                             str(getattr(item, 'thumb', '') or ''), time.time()))
 
     def artwork_path(self, library, key):
         digest = hashlib.sha256(f'{library}\0{key}'.encode()).hexdigest()

@@ -14,7 +14,7 @@ class KometaTransitionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             selected = SimpleNamespace(selected=True, ratingKey='upload://kometa')
             item = SimpleNamespace(ratingKey=123, thumb='/thumb/first', posters=lambda: [selected])
-            queue = ManualPosterQueue(Path(folder) / 'pending.json')
+            queue = ManualPosterQueue(Path(folder) / 'state.sqlite3')
             queue.mark('Series', item)
             self.assertTrue(queue.is_pending('Series', item))
             selected.ratingKey = 'agent://new'

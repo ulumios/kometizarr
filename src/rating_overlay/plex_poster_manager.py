@@ -174,7 +174,7 @@ class PlexPosterManager:
                 return False
 
             # Skip if overlay already applied (unless force=True)
-            if not force and self.backup_manager.has_overlay(self.library_name, movie.title, year=movie.year):
+            if not force and self.backup_manager.has_overlay(self.library_name, movie):
                 logger.debug(f"⏭️  {movie.title}: Already has overlay, skipping")
                 return None  # Return None to indicate skip (not success or failure)
 
@@ -254,27 +254,10 @@ class PlexPosterManager:
                 logger.warning(f"⚠️  {movie.title}: No poster URL")
                 return False
 
-            # Backup original poster
-            metadata = {
-                'rating_key': movie.ratingKey,
-                'tmdb_id': tmdb_id,
-                'imdb_id': imdb_id,
-                'title': movie.title,
-                'year': movie.year,
-                'ratings': ratings
-            }
-
             # Get or create backup (never re-download if backup exists)
             # When force=True, we just use existing backup to apply fresh overlay
             original_path = self.backup_manager.backup_poster(
-                library_name=self.library_name,
-                item_title=movie.title,
-                poster_url=poster_url,
-                item_metadata=metadata,
-                plex_token=self.plex_token,
-                force=False,
-                year=movie.year
-            )
+                self.library_name, movie, poster_url, self.plex_token, metadata={'ratings': ratings})
 
             if not original_path:
                 logger.error(f"✗ {movie.title}: Failed to backup poster")
@@ -304,12 +287,7 @@ class PlexPosterManager:
                                   status=status, badge_style=self.badge_style)
 
             # Save overlay version to backup
-            self.backup_manager.save_overlay_poster(
-                library_name=self.library_name,
-                item_title=movie.title,
-                overlay_image_path=str(overlay_path),
-                year=movie.year
-            )
+            self.backup_manager.save_overlay_poster(self.library_name, movie, str(overlay_path))
 
             # Upload to Plex
             movie.uploadPoster(filepath=str(overlay_path))
@@ -331,7 +309,7 @@ class PlexPosterManager:
         try:
             from PIL import Image
             import requests
-            from src.rating_overlay.poster_storage import paths, replace_image
+            from src.rating_overlay.poster_storage import paths, replace_image, write_metadata
             key = str(episode.ratingKey)
             original, rendered = paths(self.backup_manager, self.library_name, episode)
             backup = original.parent
@@ -352,6 +330,7 @@ class PlexPosterManager:
                 )
                 response.raise_for_status()
                 replace_image(original, response.content)
+                write_metadata(self.backup_manager, self.library_name, episode)
             ratings = self._extract_plex_ratings(episode)
             imdb_id = self._extract_imdb_id(getattr(episode, 'guids', []) or [])
             if imdb_id in self.imdb_ratings:
@@ -472,51 +451,26 @@ class PlexPosterManager:
         }
 
     def restore_movie(self, movie_title: str) -> bool:
-        """
-        Restore original poster for a movie
-
-        Args:
-            movie_title: Movie title
-
-        Returns:
-            True if restored
-        """
-        # Find movie in library
+        """Restore the original poster of one title (CLI helper)."""
         try:
             movie = self.library.get(movie_title)
-        except Exception as e:
+        except Exception:
             logger.error(f"Movie not found: {movie_title}")
             return False
-
         if self.dry_run:
             logger.info(f"[DRY-RUN] Would restore original poster for '{movie_title}'")
             return True
-
-        return self.backup_manager.restore_original(
-            library_name=self.library_name,
-            item_title=movie_title,
-            plex_item=movie,
-            year=movie.year
-        )
+        return self.backup_manager.restore_original(self.library_name, movie)
 
     def restore_library(self) -> int:
-        """
-        Restore all original posters in library
-
-        Returns:
-            Number of posters restored
-        """
-        backups = self.backup_manager.list_backups(library_name=self.library_name)
-        restored_count = 0
-
-        logger.info(f"Restoring {len(backups)} original posters...")
-
-        for backup in backups:
-            if self.restore_movie(backup['title']):
-                restored_count += 1
-
-        logger.info(f"✓ Restored {restored_count}/{len(backups)} posters")
-        return restored_count
+        """Restore every original poster of this library that currently shows an overlay."""
+        restored = 0
+        for item in self.library.all():
+            if self.backup_manager.has_overlay(self.library_name, item) and (
+                    self.dry_run or self.backup_manager.restore_original(self.library_name, item)):
+                restored += 1
+        logger.info(f"✓ Restored {restored} posters")
+        return restored
 
     def list_backups(self) -> List[Dict]:
         """List all backed up posters"""

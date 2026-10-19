@@ -1,8 +1,6 @@
 """Safeguards for media still carrying Kometa's Plex Overlay label."""
 
 import json
-import os
-from pathlib import Path
 
 # Kometa marks every item whose poster it overlaid with this Plex label.
 KOMETA_LABEL = 'Overlay'
@@ -21,11 +19,7 @@ def remove_overlay_label(item):
 
 
 def has_kometizarr_overlay(backups, library_name, item):
-    if item.type != 'episode':
-        return backups.has_overlay(library_name, item.title,
-                                   year=getattr(item, 'year', None))
-    from src.rating_overlay.poster_storage import paths
-    return paths(backups, library_name, item)[1].is_file()
+    return backups.has_overlay(library_name, item)
 
 
 def select_agent_poster(item):
@@ -41,26 +35,16 @@ def select_agent_poster(item):
 
 
 class ManualPosterQueue:
-    """Keep items out of processing after their label is removed until artwork changes."""
+    """Keep items out of processing after their label is removed until artwork changes.
 
-    def __init__(self, path='/backups/kometa_manual_pending.json'):
-        self.path = Path(path)
+    Stored as ``kometa_state='manual_pending'`` in item_state."""
 
-    def _read(self):
-        try:
-            return json.loads(self.path.read_text())
-        except (OSError, ValueError):
-            return {}
+    def __init__(self, path='/backups/media_index.sqlite3'):
+        self.path = path
 
-    def _write(self, data):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.path.with_suffix('.tmp')
-        temp.write_text(json.dumps(data))
-        os.replace(temp, self.path)
-
-    @staticmethod
-    def _key(library, item):
-        return f'{library}:{item.ratingKey}'
+    def _store(self):
+        from src.rating_overlay.item_state import ItemState
+        return ItemState(self.path)
 
     @staticmethod
     def _poster_identity(item):
@@ -69,22 +53,22 @@ class ManualPosterQueue:
                 'poster': getattr(selected, 'ratingKey', None) if selected else None}
 
     def mark(self, library, item):
-        data = self._read()
-        data[self._key(library, item)] = self._poster_identity(item)
-        self._write(data)
+        with self._store() as store:
+            store.update(library, item, kometa_state='manual_pending',
+                         manual_identity=self._poster_identity(item))
 
     def remove(self, library, item):
-        data = self._read()
-        if self._key(library, item) in data:
-            data.pop(self._key(library, item))
-            self._write(data)
+        with self._store() as store:
+            row = store.get(library, item.ratingKey)
+            if row and row['kometa_state'] == 'manual_pending':
+                store.update(library, item.ratingKey, kometa_state='none', manual_identity=None)
 
     def state(self, library, item):
-        data = self._read()
-        key = self._key(library, item)
-        if key not in data:
+        with self._store() as store:
+            row = store.get(library, item.ratingKey)
+        if not row or row['kometa_state'] != 'manual_pending':
             return 'none'
-        if data[key] != self._poster_identity(item):
+        if json.loads(row['manual_identity'] or '{}') != self._poster_identity(item):
             return 'changed'
         return 'waiting'
 
@@ -92,5 +76,5 @@ class ManualPosterQueue:
         return self.state(library, item) == 'waiting'
 
     def keys(self, library):
-        prefix = f'{library}:'
-        return [key[len(prefix):] for key in self._read() if key.startswith(prefix)]
+        with self._store() as store:
+            return store.keys(library, kometa_state='manual_pending')
