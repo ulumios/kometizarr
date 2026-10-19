@@ -14,9 +14,12 @@ Values come from Kometa's defaults:
   rows 61 px apart
 """
 
+import logging
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+
+logger = logging.getLogger(__name__)
 
 ASSETS = Path(__file__).resolve().parent.parent.parent / 'assets'
 if not (ASSETS / 'fonts').is_dir() and Path('/app/kometizarr/assets').is_dir():
@@ -39,7 +42,12 @@ _images, _fonts = {}, {}
 def image(name):
     if name not in _images:
         path = IMAGES / f'{name}.png'
-        _images[name] = Image.open(path).convert('RGBA') if path.exists() else None
+        if path.exists():
+            _images[name] = Image.open(path).convert('RGBA')
+        else:
+            # Without the image the badge would silently lose its logo
+            logger.error('Kometa image missing: %s (badges are drawn without logo)', path)
+            _images[name] = None
     return _images[name]
 
 

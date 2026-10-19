@@ -57,5 +57,24 @@ class RtTopTest(unittest.TestCase):
             self.assertNotIn('ttverifiedhotshows9', tops['rt_critic'])
 
 
+class AssetsInRepositoryTest(unittest.TestCase):
+    """Images must be committed, not only present on disk (a .gitignore rule once hid them)."""
+
+    def test_kometa_assets_are_tracked_by_git(self):
+        import subprocess
+        root = Path(__file__).resolve().parent.parent
+        try:
+            tracked = set(subprocess.run(['git', 'ls-files', 'assets'], cwd=root, capture_output=True,
+                                         text=True, check=True).stdout.split())
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest('not a git checkout')
+        needed = [f'assets/logos/kometa/{name}.png' for name in (
+            'IMDb', 'IMDbTop', 'TMDb', 'RT-Crit-Direct', 'RT-Crit-Rotten', 'RT-Crit-Top',
+            'RT-Aud-Direct', 'RT-Aud-Rotten', 'RT-Aud-Top')]
+        needed += [f'assets/logos/kometa/flags/{code}.png' for code in ('de', 'us', 'gb', 'fr', 'es', 'it', 'jp')]
+        needed += ['assets/fonts/Inter-Bold.ttf', 'assets/fonts/Inter-Medium.ttf']
+        self.assertEqual([path for path in needed if path not in tracked], [])
+
+
 if __name__ == '__main__':
     unittest.main()
