@@ -37,6 +37,7 @@ class Facts:
     has_original: bool = False
     origin: Optional[str] = None
     kometa_original: bool = False        # Kometa's stored original is readable
+    kometa_untagged: bool = False        # Kometa keeps an original but the Overlay label is gone
     lost_overlay: bool = False           # our upload is no longer the selected Plex poster
 
 
@@ -58,7 +59,8 @@ def plan_item(facts: Facts, options: Options) -> Plan:
     imdb_overlay = options.operation == 'imdb_overlay'
     plan = Plan()
 
-    if imdb_overlay and (facts.kometa_label or facts.recorded_conflict):
+    if imdb_overlay and (facts.kometa_label or facts.recorded_conflict
+                         or (facts.kometa_untagged and not facts.has_overlay)):
         return Plan.skipped('skipped', 'Kometa-Konflikt: übersprungen', remember_conflict=True)
     has_overlay = facts.has_overlay
     if not current_overlay and facts.manual_state == 'waiting':
@@ -68,8 +70,12 @@ def plan_item(facts: Facts, options: Options) -> Plan:
         plan.origin = 'manual'
         has_overlay = False  # capturing a new original drops the old overlay
 
-    if not current_overlay and facts.kometa_label:
-        needs_reset = options.reset_kometa or (not has_overlay and options.auto_reset_kometa)
+    # Kometa overlaid the poster: its label, or (label removed) its stored original.
+    # A force run takes these over like the automatic reset does.
+    kometa_poster = facts.kometa_label or (facts.kometa_untagged and not has_overlay)
+    if not current_overlay and kometa_poster:
+        needs_reset = options.reset_kometa or (
+            not has_overlay and (options.auto_reset_kometa or options.force))
         if not has_overlay and not needs_reset:
             return Plan.skipped('skipped', 'Kometa-Konflikt: Reset erforderlich', remember_conflict=True)
         if needs_reset:

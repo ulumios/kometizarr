@@ -437,7 +437,7 @@ export default function Settings() {
 
         <CronCard
           label="Force run"
-          desc="Re-renders and uploads every poster, even if nothing changed"
+          desc="Re-renders every poster and takes over Kometa posters (reset to Kometa's original or the Plex agent poster)"
           color="purple"
           cron={settings.cron_force || {}}
           libraries={libraries}

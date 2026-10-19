@@ -177,5 +177,24 @@ class KometaOriginalTest(unittest.TestCase):
             self.assertTrue(backups.has_backup('Movies', item))
 
 
+class ForceTakesOverKometaTest(unittest.TestCase):
+    def test_force_resets_kometa_posters(self):
+        labelled = plan_item(Facts(kometa_label=True), Options(force=True))
+        self.assertEqual(labelled.steps, ['reset_agent'])
+        with_original = plan_item(Facts(kometa_label=True, kometa_original=True), Options(force=True))
+        self.assertEqual((with_original.steps, with_original.origin), (['use_kometa_original'], 'kometa'))
+
+    def test_normal_run_still_protects_kometa_posters(self):
+        self.assertEqual(plan_item(Facts(kometa_label=True), Options()).skip[1], 'Kometa-Konflikt: Reset erforderlich')
+
+    def test_untagged_kometa_poster_is_detected_by_its_stored_original(self):
+        facts = Facts(kometa_untagged=True, kometa_original=True)
+        self.assertEqual(plan_item(facts, Options()).skip[1], 'Kometa-Konflikt: Reset erforderlich')
+        self.assertEqual(plan_item(facts, Options(force=True)).steps, ['use_kometa_original'])
+        self.assertEqual(plan_item(facts, Options(operation='imdb_overlay')).skip[1], 'Kometa-Konflikt: übersprungen')
+        # once Kometizarr rendered the item, a leftover Kometa original no longer matters
+        self.assertEqual(plan_item(Facts(kometa_untagged=True, has_overlay=True, has_original=True), Options()).steps, [])
+
+
 if __name__ == '__main__':
     unittest.main()

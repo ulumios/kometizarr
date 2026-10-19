@@ -243,12 +243,12 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
               id="force-checkbox"
             />
             <label htmlFor="force-checkbox" className="text-sm">
-              Force reprocess (use when updating ratings or changing which sources to display)
+              Force-Lauf: alle Poster neu rendern und Kometa-Poster übernehmen
             </label>
           </div>
           {force && (
             <div className="mt-2 p-3 bg-blue-900/20 border border-blue-700/50 rounded text-sm text-blue-300">
-              ℹ️ Uses original posters from backup to apply fresh overlays with updated ratings. Original backups are never overwritten.
+              ℹ️ Rendert jedes Poster aus seinem gesicherten Original neu. Poster mit Kometa-Overlay (Label „Overlay“ oder ein von Kometa gespeichertes Original) werden zuerst auf ein sauberes Original zurückgesetzt – Kometas eigenes Original, wenn /kometa eingebunden ist, sonst das Plex-Agent-Poster – und danach gerendert.
             </div>
           )}
 

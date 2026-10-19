@@ -238,6 +238,8 @@ async def run_overlay(request):
 
             # 1. Facts → plan (pure, see decision.py) → 2. preparation steps
             kometa_label = has_overlay_label(item)
+            # Kometa keeps an original for every poster it overlaid (only readable with /kometa mounted)
+            kometa_original = find_original(settings, request.library_name, item.ratingKey) is not None
             row = item_row(request.library_name, item) or {}
             facts = Facts(
                 kometa_label=kometa_label,
@@ -247,8 +249,8 @@ async def run_overlay(request):
                 has_original=manager.backup_manager.has_backup(request.library_name, item),
                 origin=row.get('original_source'),
                 lost_overlay=overlay_lost(request.library_name, item, row),
-                kometa_original=kometa_label and find_original(
-                    settings, request.library_name, item.ratingKey) is not None,
+                kometa_original=kometa_original,
+                kometa_untagged=kometa_original and not kometa_label,
             )
             plan = plan_item(facts, options)
             if request.plan_only:
@@ -322,7 +324,7 @@ async def run_overlay(request):
                         label_failed = True
                 if current_overlay and not label_failed:
                     manual_queue.remove(request.library_name, item)
-                if (current_overlay or kometa_label) and not label_failed:
+                if (current_overlay or kometa_label or facts.kometa_untagged) and not label_failed:
                     conflicts.forget(request.library_name, item.ratingKey)
                 if label_failed:
                     progress.count('failed', item.ratingKey)
