@@ -6,6 +6,7 @@ import Settings from './components/Settings'
 import LibraryBrowser from './components/LibraryBrowser'
 import Tasks from './components/Tasks'
 import Maintenance from './components/Maintenance'
+import Status from './components/Status'
 
 function App() {
   const [processing, setProcessing] = useState(false)
@@ -143,6 +144,10 @@ function App() {
                   className={`py-4 px-2 border-b-2 font-medium text-sm transition ${activeTab === 'maintenance' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-300'}`}>
                   🧰 Wartung
                 </button>
+                <button onClick={() => setActiveTab('status')}
+                  className={`py-4 px-2 border-b-2 font-medium text-sm transition ${activeTab === 'status' ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-300'}`}>
+                  🩺 Status
+                </button>
                 <button
                   onClick={() => setActiveTab('settings')}
                   className={`py-4 px-2 border-b-2 font-medium text-sm transition ${
@@ -173,6 +178,8 @@ function App() {
               <Tasks />
             ) : activeTab === 'maintenance' ? (
               <Maintenance onOpenTasks={() => setActiveTab('tasks')} />
+            ) : activeTab === 'status' ? (
+              <Status />
             ) : activeTab === 'collections' ? (
               <Collections selectedLibrary={selectedLibrary} />
             ) : (
@@ -190,7 +197,7 @@ function App() {
       {/* Footer */}
       <footer className="bg-gray-800 border-t border-gray-700 mt-12">
         <div className="max-w-7xl mx-auto px-4 py-4 text-center text-gray-500 text-sm">
-          Kometizarr v1.2.3 ✨
+          Kometizarr v2.0.0-dev ✨
         </div>
       </footer>
     </div>
