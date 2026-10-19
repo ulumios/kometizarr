@@ -191,9 +191,11 @@ export default function useDesignSettings() {
 
     const canvasWidth = episodeCanvas ? 1920 : 1000
     const canvasHeight = episodeCanvas ? 1080 : 1500
-    const badgeWidth = (episodeCanvas ? mediaOverlay.episode_badge_percent ?? 9
-      : badgeStyle.individual_badge_size || 9) / 100 * canvasWidth
-    const badgeHeight = badgeWidth * (source === 'imdb' ? 1.04 : 1.4)
+    // Kometa's IMDb badge has the same pixel size on poster and episode canvas
+    const kometaImdb = source === 'imdb' && (badgeStyle.imdb_variant ?? 'kometa') === 'kometa'
+    const badgeWidth = kometaImdb ? 191 * (badgeStyle.imdb_scale ?? 100) / 100
+      : (episodeCanvas ? mediaOverlay.episode_badge_percent ?? 9 : badgeStyle.individual_badge_size || 9) / 100 * canvasWidth
+    const badgeHeight = kometaImdb ? badgeWidth : badgeWidth * (source === 'imdb' ? 1.04 : 1.4)
     const xPx = Math.round(Math.max(0, Math.min(canvasWidth - badgeWidth, clickX / rect.width * canvasWidth - badgeWidth / 2)))
     const yPx = Math.round(Math.max(0, Math.min(canvasHeight - badgeHeight, clickY / rect.height * canvasHeight - badgeHeight / 2)))
     setAlignmentGuides([])

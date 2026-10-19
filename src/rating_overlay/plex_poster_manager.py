@@ -68,6 +68,7 @@ class PlexPosterManager:
         self.badge_style = badge_style or {}  # Store badge styling options
         self.media_overlay = media_overlay or {}
         self.imdb_ratings = {}  # Official IMDb dataset values, when enabled and cached
+        self.imdb_top250 = set()  # IMDb IDs in the Top 250; Kometa shows a different IMDb image
         self.last_problem = None
 
         # Connect to Plex
@@ -187,6 +188,12 @@ class PlexPosterManager:
         if getattr(item, 'type', None) == 'show' and media.get('status', False) and tmdb_id:
             status = show_status_label(self.rating_fetcher.fetch_tmdb_status(tmdb_id), media)
         style, positions = self.badge_style, badge_positions
+        if 'imdb' in ratings:
+            # Resolved here so a different IMDb look or a Top 250 change alters the render hash
+            variant = style.get('imdb_variant', 'kometa')
+            top250 = (variant == 'kometa' and not episode and style.get('imdb_top250_logo', True)
+                      and imdb_id in self.imdb_top250)
+            style = {**style, 'imdb_variant': variant, 'imdb_top250': bool(top250)}
         if episode:
             style, positions, media = episode_overlay_options(style, positions, media)
         inputs.update(ratings=ratings, source=source, languages=languages, status=status,

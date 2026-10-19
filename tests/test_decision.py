@@ -84,6 +84,7 @@ def manager_stub(ratings, media=None):
     manager = PlexPosterManager.__new__(PlexPosterManager)
     manager.rating_sources, manager.badge_style, manager.media_overlay = {}, {'size': 1}, media or {}
     manager.imdb_ratings = {}
+    manager.imdb_top250 = set()
     manager.library = SimpleNamespace(type='movie')
     manager.rating_fetcher = Mock(**{'fetch_tmdb_rating.return_value': None,
                                      'fetch_omdb_rating.return_value': None,

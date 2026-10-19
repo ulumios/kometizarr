@@ -1,9 +1,13 @@
+import KometaImdbDemo from './KometaImdbDemo'
+
 export default function BadgeEditor({ design, includeEpisodes }) {
   const {
     badgePositions, alignmentGuides, mediaOverlay, setMediaOverlay, ratingSources, badgeStyle, setBadgeStyle,
     savePositionsSoon, persistBadgeSettings, updateBadgeStyle, handleBadgeMouseDown, handlePosterMouseMove,
     handleMouseUp, setMediaPosition, setEpisodeOption, setRatingPosition,
   } = design
+  const kometaImdb = (badgeStyle.imdb_variant ?? 'kometa') === 'kometa'
+  const imdbScale = (badgeStyle.imdb_scale ?? 100) / 100
   const labelOpacity = (badgeStyle.background_opacity ?? 215) / 255
   const labelColor = badgeStyle.rating_color || '#FFFFFF'
   const labelFontFamily = badgeStyle.font_family?.includes('Mono') ? 'monospace'
@@ -98,7 +102,13 @@ export default function BadgeEditor({ design, includeEpisodes }) {
                       </g>
                     )}
 
-                    {ratingSources.imdb && badgePositions.imdb && (
+                    {ratingSources.imdb && badgePositions.imdb && kometaImdb && (
+                      <KometaImdbDemo unit={120 / 1000} scale={imdbScale}
+                        onMouseDown={(e) => handleBadgeMouseDown(e, 'imdb')}
+                        x={badgePositions.imdb.x_px != null ? badgePositions.imdb.x_px / 1000 * 120 : badgePositions.imdb.x / 100 * 120}
+                        y={badgePositions.imdb.y_px != null ? badgePositions.imdb.y_px / 1500 * 180 : badgePositions.imdb.y / 100 * 180} />
+                    )}
+                    {ratingSources.imdb && badgePositions.imdb && !kometaImdb && (
                       <g
                         className="cursor-move"
                         onMouseDown={(e) => handleBadgeMouseDown(e, 'imdb')}
@@ -188,7 +198,11 @@ export default function BadgeEditor({ design, includeEpisodes }) {
                   aria-label="Episoden-Vorschau" onMouseMove={e => handlePosterMouseMove(e, true)}
                   onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
                   <rect width="192" height="108" rx="3" fill="#1f2937" stroke="#4b5563" />
-                  {ratingSources.imdb && <g className="cursor-move" onMouseDown={e => handleBadgeMouseDown(e, 'imdb')}
+                  {ratingSources.imdb && kometaImdb && <KometaImdbDemo unit={192 / 1920} scale={imdbScale}
+                    onMouseDown={e => handleBadgeMouseDown(e, 'imdb')}
+                    x={(badgePositions.imdb?.x_px ?? (badgePositions.imdb?.x ?? 2) * 19.2) / 10}
+                    y={(badgePositions.imdb?.y_px ?? (badgePositions.imdb?.y ?? 2) * 10.8) / 10} />}
+                  {ratingSources.imdb && !kometaImdb && <g className="cursor-move" onMouseDown={e => handleBadgeMouseDown(e, 'imdb')}
                     transform={`translate(${(badgePositions.imdb?.x_px ?? (badgePositions.imdb?.x ?? 2) * 19.2) / 10}, ${(badgePositions.imdb?.y_px ?? (badgePositions.imdb?.y ?? 2) * 10.8) / 10})`}>
                     <rect width={(mediaOverlay.episode_badge_percent ?? 9) / 100 * 192}
                       height={(mediaOverlay.episode_badge_percent ?? 9) / 100 * 192 * 1.04}
@@ -269,6 +283,26 @@ export default function BadgeEditor({ design, includeEpisodes }) {
                 </div>
               ))}
             </div>
+            <div className="border-b border-gray-700 pb-3 space-y-2">
+              <label className="text-xs text-gray-400 block">IMDb-Badge
+                <select value={badgeStyle.imdb_variant ?? 'kometa'} onChange={e => updateBadgeStyle('imdb_variant', e.target.value)}
+                  className="mt-1 block w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white">
+                  <option value="kometa">Wie Kometa (Logo oben, Wertung darunter)</option>
+                  <option value="compact">Kompakt (bisherige Kometizarr-Darstellung)</option>
+                </select>
+              </label>
+              {kometaImdb && <>
+                <label className="text-xs text-gray-400 block">Größe: {Math.round(imdbScale * 100)}% von Kometa
+                  <input type="range" min="50" max="200" step="5" value={Math.round(imdbScale * 100)}
+                    onChange={e => updateBadgeStyle('imdb_scale', Number(e.target.value))} className="w-full accent-blue-500" />
+                </label>
+                <label className="text-xs text-gray-300 flex items-center gap-2">
+                  <input type="checkbox" checked={badgeStyle.imdb_top250_logo ?? true}
+                    onChange={e => updateBadgeStyle('imdb_top250_logo', e.target.checked)} />
+                  IMDb Top 250: Kometas „250“-Logo statt „IMDb“ verwenden
+                </label>
+              </>}
+            </div>
             {/* Badge Size */}
             <div>
               <label className="text-xs text-gray-400 block mb-1">
@@ -298,7 +332,7 @@ export default function BadgeEditor({ design, includeEpisodes }) {
             <div className="border-t border-gray-700 pt-3 space-y-2">
               <div className="text-xs font-medium text-gray-300">Episoden-Demo (16:9)</div>
               {[
-                ['IMDb-Badge', 'episode_badge_percent', 5, 20, 1, 9],
+                [kometaImdb ? 'IMDb-Badge (nur kompakte Darstellung)' : 'IMDb-Badge', 'episode_badge_percent', 5, 20, 1, 9],
                 ['Text und Flaggen', 'episode_font_percent', 1, 7, .1, 2.8],
                 ['Randabstand ohne Positionswert', 'episode_edge_percent', 0, 6, .1, 1.2],
               ].map(([label, key, min, max, step, fallback]) => (

@@ -114,6 +114,20 @@ def adopt_kometa_original(manager, item):
         return False
 
 
+def load_top250(rating_sources, badge_style):
+    """IMDb Top 250 IDs when the Kometa IMDb badge with Top 250 image is in use."""
+    style = badge_style or {}
+    if (rating_sources or {}).get('imdb', True) is False or style.get('imdb_variant', 'kometa') != 'kometa' \
+            or style.get('imdb_top250_logo', True) is False:
+        return set()
+    from src.rating_overlay.imdb_top250 import top250_ids
+    try:
+        return top250_ids()
+    except Exception:
+        logger.exception('Could not load the IMDb Top 250')
+        return set()
+
+
 STEP_LABELS = {'capture_manual': 'manuelles Plex-Poster übernehmen', 'capture_current': 'aktuelles Plex-Poster übernehmen',
                'capture_if_missing': 'Original sichern', 'use_kometa_original': 'Kometa-Original verwenden',
                'reset_agent': 'Agent-Poster wählen'}
@@ -195,6 +209,7 @@ async def run_overlay(request):
         if imdb_cache:
             imdb_ids = {manager._extract_imdb_id(getattr(item, 'guids', []) or []) for item in all_items}
             manager.imdb_ratings = imdb_cache.ratings(imdb_ids - {None})
+        manager.imdb_top250 = await asyncio.to_thread(load_top250, request.rating_sources, request.badge_style)
 
         logger.info(f"🎬 Processing started: {request.library_name} ({len(all_items)} items)")
 
@@ -366,6 +381,7 @@ def preview_posters(request):
         if request.include_episodes and manager.library.type == 'show':
             all_items += manager.library.all(libtype='episode')
         sample = random.sample(all_items, min(request.count, len(all_items)))
+        manager.imdb_top250 = load_top250(request.rating_sources, manager.badge_style)
         if (settings.get('imdb_direct') or {}).get('enabled'):
             from src.rating_overlay.imdb_cache import ImdbRatingCache
             cache = ImdbRatingCache()
