@@ -51,6 +51,11 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
     }
   })
 
+  // '' = global design; a library name = that library's own design profile
+  const [designScope, setDesignScope] = useState('')
+  const [profiles, setProfiles] = useState({})
+  const designScopeRef = useRef('')
+
   // Keep a ref so handleMouseUp can read latest badgePositions without stale closure
   const badgePositionsRef = useRef(badgePositions)
   const savePositionTimer = useRef(null)
@@ -68,19 +73,45 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
     }, 350)
   }
 
-  // Persist badge settings to server so webhook/cron use the same settings as the UI
+  // Persist badge settings to server so webhook/cron use the same settings as the UI.
+  // With a library selected as design scope, the patch goes into that library's profile.
   const persistBadgeSettings = async (patch) => {
     try {
       const res = await fetch('/api/settings')
       const current = await res.json()
+      const scope = designScopeRef.current
+      const next = scope
+        ? { ...current, library_profiles: { ...(current.library_profiles || {}),
+            [scope]: { ...((current.library_profiles || {})[scope] || {}), ...patch } } }
+        : { ...current, ...patch }
       await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...current, ...patch }),
+        body: JSON.stringify(next),
       })
+      setProfiles(next.library_profiles || {})
     } catch (e) {
       console.warn('Failed to persist badge settings to server:', e)
     }
+  }
+
+  // Load the design that applies to a scope: the library profile on top of the global design.
+  const changeDesignScope = async (scope, removeProfile = false) => {
+    designScopeRef.current = scope
+    setDesignScope(scope)
+    const current = await fetch('/api/settings').then(r => r.json())
+    if (removeProfile && scope) {
+      const { [scope]: _removed, ...rest } = current.library_profiles || {}
+      current.library_profiles = rest
+      await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(current) })
+    }
+    setProfiles(current.library_profiles || {})
+    const design = { ...current, ...((current.library_profiles || {})[scope] || {}) }
+    if (design.badge_positions) setBadgePositions(design.badge_positions)
+    if (design.badge_style) setBadgeStyle(design.badge_style)
+    if (design.rating_sources) setRatingSources(design.rating_sources)
+    if (design.media_overlay) setMediaOverlay(m => ({ ...m, ...design.media_overlay }))
   }
 
   useEffect(() => {
@@ -92,6 +123,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
     fetch('/api/settings')
       .then(r => r.json())
       .then(s => {
+        setProfiles(s.library_profiles || {})
         if (s.media_overlay) setMediaOverlay(current => ({ ...current, ...s.media_overlay }))
         if (s.badge_positions) {
           setBadgePositions(s.badge_positions)
@@ -531,6 +563,25 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
       {/* Processing Options */}
       <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
         <h2 className="text-xl font-semibold mb-4">Processing Options</h2>
+        <div className="bg-gray-900 rounded-lg p-4 mb-5 space-y-2">
+          <label className="text-sm font-medium block" htmlFor="design-scope">Design gilt für</label>
+          <div className="flex flex-wrap gap-2 items-center">
+            <select id="design-scope" value={designScope} onChange={e => changeDesignScope(e.target.value)}
+              className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm">
+              <option value="">Alle Bibliotheken (Standard)</option>
+              {libraries.map(lib => <option key={lib.name} value={lib.name}>
+                {lib.name}{profiles[lib.name] ? ' – eigenes Design' : ''}</option>)}
+            </select>
+            {designScope && profiles[designScope] &&
+              <button onClick={() => changeDesignScope(designScope, true)}
+                className="text-xs bg-gray-700 hover:bg-gray-600 rounded px-2 py-1">Eigenes Design entfernen</button>}
+          </div>
+          <p className="text-xs text-gray-400">
+            {designScope
+              ? `Änderungen gelten nur für „${designScope}“. Nicht geänderte Einstellungen kommen vom Standard.`
+              : 'Änderungen gelten für alle Bibliotheken ohne eigenes Design.'}
+          </p>
+        </div>
         <div className="bg-gray-900 rounded-lg p-4 mb-5 space-y-2">
           <div className="text-sm font-medium">Manueller Serienlauf</div>
           <label className="flex items-center gap-2 text-sm">

@@ -310,18 +310,22 @@ export default function Settings() {
 
   const saveSettings = async (patch) => {
     setSaving(true)
-    const merged = { ...settings, ...patch }
+    // Merge into the stored settings, not this tab's copy: the dashboard saves designs meanwhile.
+    const stored = await fetch('/api/settings').then(r => r.json()).catch(() => settings)
+    const merged = { ...stored, ...patch }
     const res = await fetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(merged),
     })
     const data = await res.json()
-    setSettings({
-      ...merged,
-      cron_normal: { ...merged.cron_normal, next_run: data.cron_normal_next_run },
-      cron_force: { ...merged.cron_force, next_run: data.cron_force_next_run },
-    })
+    // Keep unsaved edits of other sections; only the saved part comes from the server.
+    setSettings(s => ({
+      ...s,
+      ...patch,
+      cron_normal: { ...(patch.cron_normal || s.cron_normal), next_run: data.cron_normal_next_run },
+      cron_force: { ...(patch.cron_force || s.cron_force), next_run: data.cron_force_next_run },
+    }))
     setSaving(false)
     setSavedMsg('Saved!')
     setTimeout(() => setSavedMsg(''), 2000)
@@ -432,7 +436,7 @@ export default function Settings() {
         />
 
         <div className="flex items-center gap-3 pt-2">
-          <button onClick={() => saveSettings({})} disabled={saving}
+          <button onClick={() => saveSettings({ cron_normal: settings.cron_normal, cron_force: settings.cron_force })} disabled={saving}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 rounded text-sm text-white font-semibold transition">
             {saving ? 'Saving…' : 'Save Schedule'}
           </button>

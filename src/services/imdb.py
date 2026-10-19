@@ -96,7 +96,8 @@ async def run_selected(library_name, request):
                 library_name=library_name, rating_keys=request.rating_keys, force=True,
                 operation='imdb_overlay',
                 use_imdb_cache=True, record_results=True,
-                rating_sources={**(settings.get('rating_sources') or config.DEFAULT_RATING_SOURCES), 'imdb': True}))
+                rating_sources={**(config.design_for(settings, library_name)['rating_sources']
+                                   or config.DEFAULT_RATING_SOURCES), 'imdb': True}))
             results = dict(progress.results)
             for row in logs:
                 row['render'] = results.get(row['key'], 'fehlgeschlagen')

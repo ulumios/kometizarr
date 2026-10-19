@@ -37,14 +37,21 @@ def create_manager(library_name, rating_sources=None, badge_style=None, media_ov
     )
 
 
+def design_for(settings, library_name):
+    """The saved design of a library: its own profile, else the global design."""
+    profile = (settings.get('library_profiles') or {}).get(library_name) or {}
+    return {name: profile.get(name) or settings.get(name) for name in OVERLAY_OPTIONS}
+
+
 def apply_saved_overlay_options(request, settings):
     """Every entry point (UI, cron, webhook, IMDb, conflicts) renders with the saved design
-    unless the caller sends its own options."""
+    of the library unless the caller sends its own options."""
+    design = design_for(settings, request.library_name)
     for name in OVERLAY_OPTIONS:
         if name == 'badge_positions' and request.badge_position:
             continue  # explicit legacy unified badge
         if getattr(request, name) is None:
-            setattr(request, name, settings.get(name))
+            setattr(request, name, design[name])
     return request
 
 
@@ -121,6 +128,7 @@ def load_settings() -> dict:
                         "auto_render": False, "hour": 4},
         "kometa_conflicts": {"auto_reset": False},
         "lost_overlay": "adopt",
+        "library_profiles": {},
         "kometa": {"originals_dir": "", "library_map": {}},
         "media_overlay": {"source": True, "languages": True, "status": False, "label_size_percent": 4,
                            "episode_font_percent": 2.8, "font_percent": 4, "opacity": 180,

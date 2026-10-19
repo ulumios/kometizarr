@@ -350,7 +350,7 @@ def preview_posters(request):
     api_cache = None
     try:
         settings = config.load_settings()
-        media_options = request.media_overlay or settings.get('media_overlay', {})
+        media_options = request.media_overlay or config.design_for(settings, request.library_name)['media_overlay'] or {}
         from src.rating_overlay.api_cache import ApiCache
         api_cache = ApiCache()
         manager = config.create_manager(request.library_name, request.rating_sources,

@@ -25,6 +25,15 @@ class UnifiedWorkflowTest(unittest.TestCase):
         config.apply_saved_overlay_options(request, {'badge_positions': {'imdb': {'x': 1, 'y': 1}}})
         self.assertIsNone(request.badge_positions)
 
+    def test_library_profile_overrides_global_design(self):
+        settings = {'badge_style': {'font': 'global'}, 'rating_sources': {'imdb': True},
+                    'library_profiles': {'Anime': {'badge_style': {'font': 'anime'}}}}
+        anime = config.apply_saved_overlay_options(ProcessRequest(library_name='Anime'), settings)
+        movies = config.apply_saved_overlay_options(ProcessRequest(library_name='Movies'), settings)
+        self.assertEqual(anime.badge_style, {'font': 'anime'})
+        self.assertEqual(anime.rating_sources, {'imdb': True})  # not in profile: global
+        self.assertEqual(movies.badge_style, {'font': 'global'})
+
     def test_backup_folder_cannot_escape_backup_root(self):
         self.assertEqual(config.backup_library_dir('Movies').name, 'Movies')
         for name in ('..', '../etc', 'Movies/../..', ''):
