@@ -572,8 +572,9 @@ export default function Settings() {
         <div>
           <h3 className="text-sm font-medium text-gray-300 mb-2">Fetch Fresh Posters</h3>
           <p className="text-xs text-gray-400 mb-3">
-            Resets each item's active poster to the original TMDB/agent poster, removing uploaded overlays from Plex's view.
-            Does not delete backups.
+            Resets each item's active poster to the original TMDB/agent poster (same as "Reset Plex" in the library browser):
+            the clean poster is saved as the new backup original, the Kometa <code>Overlay</code> label is removed and
+            the item is rendered again on the next run. Runs as a queued task.
           </p>
           <div className="space-y-3">
             <div>
@@ -625,9 +626,8 @@ export default function Settings() {
           )}
 
           <WarningBox>
-            Fetching fresh posters while backups are present will cause Kometizarr to skip those items on the next run
-            (it treats items with backups as already processed). Only use this in case of problems, and always combine with
-            <strong className="text-yellow-200"> Delete Backups</strong>.
+            Previously uploaded original backups are replaced by the current agent poster. Use this when posters in Plex
+            are broken or still show Kometa artwork.
           </WarningBox>
         </div>
 

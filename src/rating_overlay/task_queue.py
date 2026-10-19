@@ -69,6 +69,9 @@ class TaskQueue:
                 for row in self.db.execute('SELECT id,kind,payload,status,created_at,updated_at,attempts,error,progress,results '
                                            'FROM tasks ORDER BY id DESC LIMIT ?', (min(100, max(1, limit)),))]
 
+    def queued_count(self):
+        return self.db.execute("SELECT COUNT(*) FROM tasks WHERE status='queued'").fetchone()[0]
+
     def get(self, task_id):
         row = self.db.execute('SELECT status FROM tasks WHERE id=?', (task_id,)).fetchone()
         return row[0] if row else None

@@ -4,9 +4,20 @@ import json
 import os
 from pathlib import Path
 
+# Kometa marks every item whose poster it overlaid with this Plex label.
+KOMETA_LABEL = 'Overlay'
+
 
 def has_overlay_label(item):
-    return any(getattr(label, 'tag', None) == 'Overlay' for label in (getattr(item, 'labels', None) or []))
+    return any(getattr(label, 'tag', None) == KOMETA_LABEL for label in (getattr(item, 'labels', None) or []))
+
+
+def remove_overlay_label(item):
+    """Hand the item over from Kometa to Kometizarr; returns True if a label was removed."""
+    if not has_overlay_label(item):
+        return False
+    item.removeLabel(KOMETA_LABEL)
+    return True
 
 
 def has_kometizarr_overlay(backups, library_name, item):

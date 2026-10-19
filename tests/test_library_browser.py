@@ -1,6 +1,8 @@
 import asyncio
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -23,7 +25,11 @@ class PosterProxyTest(unittest.TestCase):
                                  url=lambda path: 'http://plex:32400' + path,
                                  _session=SimpleNamespace(get=get))
         main._browse_image_cache.clear()
-        with patch('plexapi.server.PlexServer', return_value=server), patch.dict(os.environ, {'PLEX_TOKEN': 'secret'}):
+        from src.rating_overlay.media_index import MediaIndex
+        with tempfile.TemporaryDirectory() as folder, \
+             patch('src.rating_overlay.media_index.MediaIndex',
+                   side_effect=lambda: MediaIndex(Path(folder) / 'index.sqlite3')), \
+             patch('plexapi.server.PlexServer', return_value=server), patch.dict(os.environ, {'PLEX_TOKEN': 'secret'}):
             result = asyncio.run(main.browse_poster('Series', key))
         self.assertEqual(result.body, b'jpeg bytes')
         self.assertEqual(captured['headers'], {'X-Plex-Token': 'secret'})
