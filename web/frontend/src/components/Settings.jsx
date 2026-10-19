@@ -508,11 +508,12 @@ export default function Settings() {
         <label className="text-sm block">Wenn ein Overlay in Plex verloren geht (Metadaten aufgefrischt oder Poster gewechselt):
           <select value={settings.lost_overlay || 'adopt'} onChange={e => setSettings(s => ({ ...s, lost_overlay: e.target.value }))}
             className="mt-1 block w-full max-w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm">
-            <option value="adopt">Neues Plex-Poster als Original übernehmen und neu rendern</option>
-            <option value="restore">Altes Original behalten und Overlay erneut hochladen</option>
+            <option value="adopt">Neues Poster übernehmen</option>
+            <option value="restore">Altes Original behalten</option>
             <option value="report">Nur melden</option>
           </select>
         </label>
+        <p className="text-xs text-gray-500">{{ adopt: 'Das neue Plex-Poster wird zum Original, dann wird das Overlay neu gerendert.', restore: 'Das gesicherte Original bleibt, das Overlay wird erneut hochgeladen.', report: 'Der Titel wird nur im Ergebnis gemeldet und nicht verändert.' }[settings.lost_overlay || 'adopt']}</p>
         <button onClick={() => saveSettings({ kometa_conflicts: settings.kometa_conflicts, lost_overlay: settings.lost_overlay, kometa: settings.kometa })} disabled={saving}
           className="bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm">Kometa-Einstellung speichern</button>
       </section>

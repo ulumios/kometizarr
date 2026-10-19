@@ -77,6 +77,11 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-900">
+      {/* Sticky in the page flow, so it never covers the header or the tabs */}
+      {progressData && !processing && showProgressBanner && (
+        <ProcessingProgress compact progressData={progressData} setProgressData={setProgressData}
+          onComplete={() => setProcessing(true)} />
+      )}
       {/* Header */}
       <header className="bg-gray-800 border-b border-gray-700">
         <div className="max-w-7xl mx-auto px-4 py-6">
@@ -188,11 +193,6 @@ function App() {
           </>
         )}
       </main>
-
-      {progressData && !processing && showProgressBanner && (
-        <ProcessingProgress compact progressData={progressData} setProgressData={setProgressData}
-          onComplete={() => setProcessing(true)} />
-      )}
 
       {/* Footer */}
       <footer className="bg-gray-800 border-t border-gray-700 mt-12">

@@ -103,13 +103,13 @@ function ProcessingProgress({ onComplete, progressData, setProgressData, compact
     : 0
 
   if (compact) {
-    return <div className="fixed top-0 left-0 right-0 z-40 bg-gray-800 border-b border-blue-700 px-4 py-2 shadow-lg">
-      <div className="max-w-7xl mx-auto flex items-center gap-4 text-sm">
-        <span className={isActive ? 'text-blue-300' : 'text-green-300'}>{isActive ? '● Processing' : '✓ Last run'}</span>
-        <span className="text-gray-300">{progressData.current_library || 'Library'}: {progressData.progress}/{progressData.total}</span>
-        <div className="flex-1 bg-gray-700 rounded-full h-2"><div className="bg-blue-500 h-2 rounded-full" style={{width: `${progressPercent}%`}} /></div>
-        <span className="text-gray-400">{progressPercent}%</span>
-        <button onClick={onComplete} className="text-blue-300 hover:text-white">Open progress</button>
+    return <div className="sticky top-0 z-40 bg-gray-800 border-b border-blue-700 px-4 py-2 shadow-lg">
+      <div className="max-w-7xl mx-auto flex flex-wrap sm:flex-nowrap items-center gap-x-4 gap-y-1 text-xs sm:text-sm">
+        <span className={`shrink-0 ${isActive ? 'text-blue-300' : 'text-green-300'}`}>{isActive ? '● Processing' : '✓ Last run'}</span>
+        <span className="text-gray-300 min-w-0 truncate">{progressData.current_library || 'Library'}: {progressData.progress}/{progressData.total}</span>
+        <div className="order-last sm:order-none basis-full sm:basis-auto flex-1 bg-gray-700 rounded-full h-2"><div className="bg-blue-500 h-2 rounded-full" style={{width: `${progressPercent}%`}} /></div>
+        <span className="text-gray-400 shrink-0">{progressPercent}%</span>
+        <button onClick={onComplete} className="text-blue-300 hover:text-white shrink-0 ml-auto sm:ml-0">Open progress</button>
       </div>
     </div>
   }
@@ -125,12 +125,12 @@ function ProcessingProgress({ onComplete, progressData, setProgressData, compact
       )}
 
       {/* Header */}
-      <div className="bg-gray-800 rounded-lg p-6 border border-gray-700">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-2xl font-semibold">
+      <div className="bg-gray-800 rounded-lg p-4 sm:p-6 border border-gray-700">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <h2 className="text-xl sm:text-2xl font-semibold min-w-0 break-words">
             {isRestoring ? 'Restoring' : 'Processing'} {progressData.current_library}
           </h2>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             {isActive && (
               <>
                 <span className="flex items-center text-blue-400">

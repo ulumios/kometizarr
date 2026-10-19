@@ -308,10 +308,12 @@ export default function BadgeEditor({ design, includeEpisodes }) {
               <label className="text-xs text-gray-400 block">Badge-Stil
                 <select value={kometa ? 'kometa' : 'compact'} onChange={e => updateBadgeStyle('variant', e.target.value)}
                   className="mt-1 block w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white">
-                  <option value="kometa">Wie Kometa (Logos, Schrift Inter, Boxen und Farben aus Kometas Standard-Overlays)</option>
-                  <option value="compact">Kompakt (bisherige Kometizarr-Darstellung, frei gestaltbar)</option>
+                  <option value="kometa">Wie Kometa</option>
+                  <option value="compact">Kompakt (frei gestaltbar)</option>
                 </select>
               </label>
+              {/* Short options: Safari sizes a select by its longest option and would widen the page on phones */}
+              <p className="text-xs text-gray-500">{kometa ? 'Logos, Schrift Inter, Boxen und Farben aus Kometas Standard-Overlays.' : 'Bisherige Kometizarr-Darstellung, Schrift, Farben und Größen frei einstellbar.'}</p>
               {kometa && <>
                 <label className="text-xs text-gray-400 block">Größe aller Badges: {Math.round(kometaScale * 100)}% von Kometa
                   <input type="range" min="50" max="200" step="5" value={Math.round(kometaScale * 100)}
