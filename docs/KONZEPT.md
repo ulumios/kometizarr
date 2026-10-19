@@ -71,7 +71,8 @@ Ein `RunProgress` pro aktiver Aufgabe:
 
 - Wird in der Task-Tabelle gespeichert (überlebt Neustart) und per WebSocket gesendet.
 - `processing_state`, `restore_state`, `imdb_sync_state`, `conflict_state` entfallen.
-- Bibliotheks-Scans werden ebenfalls Aufgaben.
+- Bibliotheks-Scans lesen Plex nur und laufen neben dem Worker; sie erscheinen trotzdem in der Aufgabenliste.
+- Die bisherigen Status-Endpunkte (`/api/status`, `/api/imdb-sync/status`, …) bleiben als Ansichten dieses Modells erhalten; neu ist `/api/progress`.
 - Das Frontend liest nur noch `/api/tasks` bzw. den WebSocket.
 
 ## 4. Entscheidung, Änderungserkennung, Vorschau

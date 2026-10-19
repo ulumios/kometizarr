@@ -2,6 +2,8 @@
 
 import json
 
+from src.rating_overlay.data_paths import data_file
+
 # Kometa marks every item whose poster it overlaid with this Plex label.
 KOMETA_LABEL = 'Overlay'
 
@@ -39,8 +41,8 @@ class ManualPosterQueue:
 
     Stored as ``kometa_state='manual_pending'`` in item_state."""
 
-    def __init__(self, path='/backups/media_index.sqlite3'):
-        self.path = path
+    def __init__(self, path=None):
+        self.path = path or data_file('media_index.sqlite3')
 
     def _store(self):
         from src.rating_overlay.item_state import ItemState

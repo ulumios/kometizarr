@@ -6,7 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from src.rating_overlay.kometa_conflicts import ManualPosterQueue, has_overlay_label, select_agent_poster
-from web.backend import main
+import time
+
+from src.services import config, conflicts, imdb, overlay
+from src.services.models import ProcessRequest
+from src.services.progress import progress
 
 
 class KometaTransitionTest(unittest.TestCase):
@@ -37,18 +41,18 @@ class KometaTransitionTest(unittest.TestCase):
         library = SimpleNamespace(all=lambda: [item], type='movie')
         manager = Mock(library=library, library_name='Movies', backup_manager=Mock())
         manager.backup_manager.has_overlay.return_value = False
-        with patch.object(main, 'PlexPosterManager', return_value=manager), \
-             patch.object(main, '_load_settings', return_value={'media_overlay': {},
+        with patch.object(config, 'create_manager', return_value=manager), \
+             patch.object(config, 'load_settings', return_value={'media_overlay': {},
                                                                 'imdb_direct': {'enabled': False},
                                                                 'kometa_conflicts': {'auto_reset': False}}), \
              patch('src.rating_overlay.kometa_conflicts.ManualPosterQueue') as queue, \
-             patch.object(main, 'broadcast_progress', new_callable=AsyncMock):
+             patch('src.rating_overlay.api_cache.ApiCache'):
             queue.return_value.state.return_value = 'none'
-            main.processing_state['stop_requested'] = False
-            asyncio.run(main.process_library_background(main.ProcessRequest(library_name='Movies')))
+            progress.reset()
+            asyncio.run(overlay.run_overlay(ProcessRequest(library_name='Movies')))
         manager.process_movie.assert_not_called()
-        self.assertEqual(main.processing_state['skipped'], 1)
-        self.assertEqual(main.processing_state['failed'], 0)
+        self.assertEqual(progress.skipped, 1)
+        self.assertEqual(progress.failed, 0)
 
     def test_library_search_filters_cached_entries(self):
         from src.rating_overlay.media_index import MediaIndex
@@ -103,32 +107,34 @@ class KometaTransitionTest(unittest.TestCase):
                 pass
 
         server = SimpleNamespace(library=SimpleNamespace(sections=lambda: [SimpleNamespace(title='Movies')]))
-        with patch.object(main, '_load_settings', return_value={'imdb_direct': {'libraries': ['Movies']}}), \
+        with patch.object(config, 'load_settings', return_value={'imdb_direct': {'libraries': ['Movies']}}), \
              patch('plexapi.server.PlexServer', return_value=server), \
-             patch.object(main, '_collect_imdb_items', return_value={'Movies': [('1', 'tt123')]}), \
+             patch.object(imdb, 'collect_items', return_value={'Movies': [('1', 'tt123')]}), \
              patch('src.rating_overlay.imdb_cache.ImdbRatingCache', return_value=Cache()), \
-             patch.object(main, 'process_library_background', new_callable=AsyncMock) as render:
-            asyncio.run(main._run_imdb_sync('ratings'))
+             patch.object(overlay, 'run_overlay', new_callable=AsyncMock) as render:
+            progress.reset()
+            imdb._start('Lese Plex')
+            asyncio.run(imdb.run_sync('ratings'))
             render.assert_not_called()
-        self.assertEqual(main.imdb_sync_state['pending'], 1)
-        self.assertEqual(main.imdb_sync_state['rendered'], 0)
+        self.assertEqual(progress.extra['pending'], 1)
+        self.assertEqual(progress.extra['rendered'], 0)
 
     def test_conflict_scan_uses_cached_response(self):
-        old = main._conflict_scans.get('Shows')
+        old = conflicts.snapshots.get('Shows')
         try:
-            main._conflict_scans['Shows'] = {
+            conflicts.snapshots['Shows'] = {
                 'is_running': False, 'items': [{'key': '7'}],
-                'error': None, 'updated_at': main.time.time()}
-            with patch.object(main, '_scan_kometa_conflicts') as scan:
-                result = asyncio.run(main.get_kometa_conflicts('Shows'))
+                'error': None, 'updated_at': time.time()}
+            with patch.object(conflicts, 'scan_library') as scan:
+                result = asyncio.run(conflicts.get_conflicts('Shows'))
                 self.assertEqual(result['items'], [{'key': '7'}])
                 self.assertFalse(result['is_running'])
                 scan.assert_not_called()
         finally:
             if old is None:
-                main._conflict_scans.pop('Shows', None)
+                conflicts.snapshots.pop('Shows', None)
             else:
-                main._conflict_scans['Shows'] = old
+                conflicts.snapshots['Shows'] = old
 
     def test_conflict_scan_skips_deleted_plex_episode(self):
         from plexapi.exceptions import NotFound
@@ -155,11 +161,11 @@ class KometaTransitionTest(unittest.TestCase):
             queue.return_value.keys.return_value = []
             queue.return_value.state.return_value = 'none'
             backups.return_value.backup_dir = Path(folder)
-            progress = {'skipped': 0}
-            result = main._scan_kometa_conflicts('Shows', progress)
+            scan_progress = {'skipped': 0}
+            result = conflicts.scan_library('Shows', scan_progress)
         self.assertEqual([entry['key'] for entry in result], ['42'])
-        self.assertEqual(progress['skipped'], 1)
-        self.assertEqual(progress['processed'], 1)
+        self.assertEqual(scan_progress['skipped'], 1)
+        self.assertEqual(scan_progress['processed'], 1)
 
 
 if __name__ == '__main__':

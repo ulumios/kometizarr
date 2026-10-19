@@ -6,7 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from web.backend import main
+from src.services import imdb, library_index, overlay
+from src.services.progress import progress
+from web.backend.routes import library as library_routes
 
 
 class PosterProxyTest(unittest.TestCase):
@@ -24,13 +26,13 @@ class PosterProxyTest(unittest.TestCase):
         server = SimpleNamespace(library=SimpleNamespace(section=lambda _: library),
                                  url=lambda path: 'http://plex:32400' + path,
                                  _session=SimpleNamespace(get=get))
-        main._browse_image_cache.clear()
+        library_index.browse_image_cache.clear()
         from src.rating_overlay.media_index import MediaIndex
         with tempfile.TemporaryDirectory() as folder, \
              patch('src.rating_overlay.media_index.MediaIndex',
                    side_effect=lambda: MediaIndex(Path(folder) / 'index.sqlite3')), \
              patch('plexapi.server.PlexServer', return_value=server), patch.dict(os.environ, {'PLEX_TOKEN': 'secret'}):
-            result = asyncio.run(main.browse_poster('Series', key))
+            result = asyncio.run(library_routes.browse_poster('Series', key))
         self.assertEqual(result.body, b'jpeg bytes')
         self.assertEqual(captured['headers'], {'X-Plex-Token': 'secret'})
 
@@ -49,14 +51,15 @@ class PosterProxyTest(unittest.TestCase):
                 pass
 
         selected = [{'key': '12', 'title': 'Example S01E01 · Pilot', 'type': 'episode', 'imdb_id': 'tt123'}]
-        main.imdb_sync_state.update(is_running=True, changed=0, logs=[], error=None)
-        with patch.object(main, '_resolve_selected_for_imdb', return_value=selected), \
+        progress.reset()
+        imdb._start('Lese Auswahl')
+        with patch.object(imdb, 'resolve_selected', return_value=selected), \
              patch('src.rating_overlay.imdb_cache.ImdbRatingCache', return_value=Cache()), \
-             patch.object(main, 'process_library_background') as render:
-            asyncio.run(main._run_selected_imdb('Shows', SimpleNamespace(rating_keys=['12'], mode='ratings')))
+             patch.object(overlay, 'run_overlay') as render:
+            asyncio.run(imdb.run_selected('Shows', SimpleNamespace(rating_keys=['12'], mode='ratings')))
         render.assert_not_called()
-        self.assertEqual(main.imdb_sync_state['logs'][0]['rating'], 7.5)
-        self.assertTrue(main.imdb_sync_state['logs'][0]['changed'])
+        self.assertEqual(progress.extra['logs'][0]['rating'], 7.5)
+        self.assertTrue(progress.extra['logs'][0]['changed'])
 
 
 if __name__ == '__main__':

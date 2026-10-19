@@ -5,6 +5,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from src.rating_overlay.data_paths import data_file
+
 COLUMNS = ('type', 'title', 'year', 'series', 'season', 'episode', 'backup_id',
            'original_source', 'original_hash', 'render_hash', 'uploaded_thumb',
            'uploaded_poster', 'status', 'kometa_state', 'manual_identity', 'reason',
@@ -12,8 +14,8 @@ COLUMNS = ('type', 'title', 'year', 'series', 'season', 'episode', 'backup_id',
 
 
 class ItemState:
-    def __init__(self, path='/backups/media_index.sqlite3'):
-        self.path = Path(path)
+    def __init__(self, path=None):
+        self.path = Path(path) if path else data_file('media_index.sqlite3')
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, timeout=30)
         self.db.execute('PRAGMA journal_mode=WAL')

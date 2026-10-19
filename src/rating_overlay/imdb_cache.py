@@ -10,13 +10,15 @@ from pathlib import Path
 
 import requests
 
+from src.rating_overlay.data_paths import data_file
+
 
 RATINGS_URL = 'https://datasets.imdbws.com/title.ratings.tsv.gz'
 
 
 class ImdbRatingCache:
-    def __init__(self, path='/backups/imdb_ratings.sqlite3'):
-        self.path = Path(path)
+    def __init__(self, path=None):
+        self.path = Path(path) if path else data_file('imdb_ratings.sqlite3')
         self.dataset_path = self.path.with_suffix('.tsv.gz')
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, timeout=30, check_same_thread=False)

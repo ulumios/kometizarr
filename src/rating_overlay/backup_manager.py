@@ -13,20 +13,22 @@ from typing import Optional, Dict
 import requests
 from PIL import Image
 
+from src.rating_overlay.data_paths import data_file
+
 logger = logging.getLogger(__name__)
 
 
 class PosterBackupManager:
     """Manage poster backups before applying overlays"""
 
-    def __init__(self, backup_dir: str = '/backups'):
+    def __init__(self, backup_dir: Optional[str] = None):
         """
         Initialize backup manager
 
         Args:
             backup_dir: Root directory for backups
         """
-        self.backup_dir = Path(backup_dir)
+        self.backup_dir = Path(backup_dir) if backup_dir else data_file('')
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Backup directory: {self.backup_dir}")
 

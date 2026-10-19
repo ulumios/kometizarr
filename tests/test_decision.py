@@ -3,14 +3,16 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 from PIL import Image
 
 from src.rating_overlay.api_cache import ApiCache
 from src.rating_overlay.decision import Facts, Options, plan_item, plan_render
 from src.rating_overlay.plex_poster_manager import PlexPosterManager
-from web.backend import main
+from src.services import config, overlay
+from src.services.models import ProcessRequest
+from src.services.progress import progress
 
 
 class PlanItemTest(unittest.TestCase):
@@ -48,23 +50,23 @@ class LostOverlayTest(unittest.TestCase):
     def test_detects_foreign_selected_poster(self):
         row = {'status': 'rendered', 'uploaded_thumb': '/thumb/1', 'uploaded_poster': 'upload://posters/abc'}
         ours = SimpleNamespace(ratingKey=1, thumb='/thumb/1', posters=Mock())
-        self.assertFalse(main._overlay_lost('Movies', ours, row))
+        self.assertFalse(overlay.overlay_lost('Movies', ours, row))
         ours.posters.assert_not_called()  # unchanged thumb needs no Plex request
         replaced = SimpleNamespace(ratingKey=1, thumb='/thumb/2', posters=lambda: [
             SimpleNamespace(ratingKey='upload://posters/abc', selected=False),
             SimpleNamespace(ratingKey='tmdb://poster', selected=True)])
-        self.assertTrue(main._overlay_lost('Movies', replaced, row))
+        self.assertTrue(overlay.overlay_lost('Movies', replaced, row))
         refreshed = SimpleNamespace(ratingKey=1, thumb='/thumb/3', posters=lambda: [
             SimpleNamespace(ratingKey='upload://posters/abc', selected=True)])
-        with patch.object(main, '_mark_item') as mark:
-            self.assertFalse(main._overlay_lost('Movies', refreshed, row))
+        with patch.object(overlay, 'mark_item') as mark:
+            self.assertFalse(overlay.overlay_lost('Movies', refreshed, row))
         mark.assert_called_once_with('Movies', refreshed, uploaded_thumb='/thumb/3')
 
     def test_items_without_known_upload_use_upload_marker(self):
         row = {'status': 'rendered', 'uploaded_thumb': '/thumb/1', 'uploaded_poster': None}
         item = SimpleNamespace(ratingKey=1, thumb='/thumb/2', posters=lambda: [
             SimpleNamespace(ratingKey='metadata://posters/agent', selected=True)])
-        self.assertTrue(main._overlay_lost('Movies', item, row))
+        self.assertTrue(overlay.overlay_lost('Movies', item, row))
 
 
 class PlanRenderTest(unittest.TestCase):
@@ -131,20 +133,18 @@ class RunSkipsUnchangedTest(unittest.TestCase):
         manager.backup_manager.has_overlay.return_value = True
         with tempfile.TemporaryDirectory() as folder:
             original = Path(folder) / 'original.jpg'
-            with patch.object(main, '_create_manager', return_value=manager), \
-                 patch.object(main, '_load_settings', return_value={'imdb_direct': {}}), \
-                 patch.object(main, '_item_row', return_value={'render_hash': 'same'}), \
-                 patch.object(main, '_mark_item'), \
+            with patch.object(config, 'create_manager', return_value=manager), \
+                 patch.object(config, 'load_settings', return_value={'imdb_direct': {}}), \
+                 patch.object(overlay, 'item_row', return_value={'render_hash': 'same'}), \
+                 patch.object(overlay, 'mark_item'), \
                  patch('src.rating_overlay.poster_storage.paths', return_value=(original, original)), \
                  patch('src.rating_overlay.kometa_conflicts.ManualPosterQueue') as queue, \
-                 patch('src.rating_overlay.api_cache.ApiCache'), \
-                 patch.object(main, 'broadcast_progress', new_callable=AsyncMock):
+                 patch('src.rating_overlay.api_cache.ApiCache'):
                 queue.return_value.state.return_value = 'none'
-                main.processing_state['stop_requested'] = False
-                asyncio.run(main.process_library_background(main.ProcessRequest(
-                    library_name='Movies', record_results=True)))
+                progress.reset()
+                asyncio.run(overlay.run_overlay(ProcessRequest(library_name='Movies', record_results=True)))
         manager.process_movie.assert_not_called()
-        self.assertEqual(main.processing_state['item_results'], {'1': 'unverändert'})
+        self.assertEqual(progress.results, {'1': 'unverändert'})
 
 
 class KometaOriginalTest(unittest.TestCase):
@@ -170,9 +170,9 @@ class KometaOriginalTest(unittest.TestCase):
             backups = PosterBackupManager(Path(folder) / 'backups')
             manager = SimpleNamespace(library_name='Movies', backup_manager=backups)
             item = SimpleNamespace(type='movie', title='X', year=1, ratingKey=7, guids=[])
-            with patch.object(main, '_load_settings', return_value={
+            with patch.object(config, 'load_settings', return_value={
                     'kometa': {'originals_dir': str(Path(folder) / 'overlays')}}):
-                self.assertTrue(main._adopt_kometa_original(manager, item))
+                self.assertTrue(overlay.adopt_kometa_original(manager, item))
             self.assertTrue(backups.has_backup('Movies', item))
 
 

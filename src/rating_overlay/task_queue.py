@@ -5,10 +5,12 @@ import sqlite3
 import time
 from pathlib import Path
 
+from src.rating_overlay.data_paths import data_file
+
 
 class TaskQueue:
-    def __init__(self, path='/backups/tasks.sqlite3'):
-        self.path = Path(path)
+    def __init__(self, path=None):
+        self.path = Path(path) if path else data_file('tasks.sqlite3')
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, timeout=30)
         self.db.execute('PRAGMA journal_mode=WAL')
