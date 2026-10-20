@@ -197,3 +197,11 @@ Abweichungen vom Plan:
   (`kometa_keys`). Fortschrittsansicht, Aufgabenliste und Bibliotheksansicht bieten an, diese mit
   `reset_kometa` erneut zu starten; der IMDb-Lauf aus der Bibliotheksansicht fragt vorher.
 - **Geplante Läufe** können Episoden mit bearbeiten (`include_episodes`).
+- **Jeder Lauf ist ein Prüflauf**: Poster ohne Fingerabdruck werden einmal gerendert statt
+  übernommen (`RENDERER_VERSION` 2 rendert einmal alles neu). Danach entsteht ein neues Overlay,
+  sobald sich Wertung, Quelle, Serienstatus, Layout, Position oder Original ändern. Force lädt
+  zusätzlich unveränderte Poster hoch und übernimmt Kometa-Poster ohne Nachfrage.
+- **Ergebnisse je Titel**: Läufe speichern das Ergebnis jedes Titels (außer „unverändert“).
+  Die Aufgabenliste zeigt die Einträge; ein Klick öffnet sie in der Bibliotheksansicht
+  (gefiltert auf die Aufgabe, Serie → Staffel → Episode). Läufe aus der Bibliotheksansicht
+  zeigen danach automatisch nur die betroffenen Titel.

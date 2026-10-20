@@ -14,15 +14,77 @@ browse_image_cache = {}
 scans = {}
 
 
-def read_library_index(library_name, parent_key, episodes, q, page, page_size, conflicts_only=False,
-                       missing_overlay=False):
+def task_outcomes(task):
+    """{rating key: reason or None} of everything a task touched: the selection it was
+    started with, per-item results, failed items and items skipped for Kometa."""
+    outcomes = {}
+    payload = task.get('payload') or {}
+    for source in (payload, payload.get('request') or {}):
+        for key in source.get('rating_keys') or []:
+            outcomes[str(key)] = None
+        for name in ('rating_key', 'key'):
+            if source.get(name):
+                outcomes[str(source[name])] = None
+    progress = task.get('progress') or {}
+    for key in progress.get('failed_keys') or []:
+        outcomes[str(key)] = 'fehlgeschlagen'
+    for keys in (progress.get('kometa_keys') or {}).values():
+        for key in keys:
+            outcomes[str(key)] = 'Kometa erkannt'
+    results = task.get('results')
+    if isinstance(results, dict):
+        outcomes.update({str(key): reason for key, reason in results.items()})
+    elif isinstance(results, list):  # IMDb runs keep a log per item
+        for row in results:
+            if isinstance(row, dict) and row.get('key'):
+                outcomes[str(row['key'])] = row.get('render') or (
+                    'IMDb-Wertung geändert' if row.get('changed') else 'IMDb unverändert')
+    return outcomes
+
+
+def task_items(task, limit=500):
+    """Touched items with titles and the show/season path for the library browser."""
     from src.rating_overlay.media_index import MediaIndex
+    outcomes = task_outcomes(task)
+    index = MediaIndex()
+    try:
+        rows = index.describe(list(outcomes)[:limit])
+        for row in rows:
+            row['result'] = outcomes[row['key']]
+            row['path'] = index.ancestors(row['library'], row['key'])
+    finally:
+        index.close()
+    def order(row):
+        # movies by title; shows, then their seasons, then the episodes of each season
+        show = row['series'] or (row['path'][0]['title'] if row['path'] else row['title']) or ''
+        season = row['season'] if row['type'] == 'episode' else row['index'] if row['type'] == 'season' else -1
+        return (row['library'], show.lower(), season or 0, row['type'] == 'episode', row['index'] or 0, row['title'] or '')
+    rows.sort(key=order)
+    return {'items': rows, 'total': len(outcomes), 'missing': max(0, min(len(outcomes), limit) - len(rows))}
+
+
+def read_library_index(library_name, parent_key, episodes, q, page, page_size, conflicts_only=False,
+                       missing_overlay=False, task_ids=()):
+    from src.rating_overlay.media_index import MediaIndex
+    from src.services import tasks
     index = MediaIndex()
     try:
         updated_at, _ = index.snapshot(library_name, 'browse')
+        only_keys, outcomes = None, {}
+        if task_ids:
+            for task_id in task_ids:
+                task = tasks.with_tasks('fetch', task_id)
+                if task:
+                    outcomes.update({key: reason for key, reason in task_outcomes(task).items()
+                                     if reason is not None or key not in outcomes})
+            only_keys = index.related_keys(library_name, list(outcomes))
         result = index.browse(library_name, parent_key, episodes, q, page, page_size,
-                              conflicts_only=conflicts_only, missing_overlay=missing_overlay) if updated_at else {
+                              conflicts_only=conflicts_only, missing_overlay=missing_overlay,
+                              only_keys=only_keys) if updated_at else {
             'total': 0, 'page': page, 'items': []}
+        for item in result['items']:
+            if outcomes.get(item['key']):
+                item['result'] = outcomes[item['key']]
         # The overlay filter needs one scan after this feature was installed
         result['overlay_flags_ready'] = index.flags_ready(library_name)
         return updated_at, result

@@ -28,7 +28,7 @@ export default function ActionButtons({ selectedLibrary, selectedLibraries, prev
         disabled={selectedLibraries.length === 0}
         className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition"
       >
-        {selectedLibraries.length > 1 ? `▶️ Process (${selectedLibraries.length})` : '▶️ Process'}
+        {selectedLibraries.length > 1 ? `▶️ Aktualisieren (${selectedLibraries.length})` : '▶️ Aktualisieren'}
       </button>
     </div>
   )

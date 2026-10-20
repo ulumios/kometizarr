@@ -75,7 +75,7 @@ class PlanRenderTest(unittest.TestCase):
         self.assertEqual(plan_render(options, True, 'a', 'a', False), ('skip', 'unverändert'))
         self.assertEqual(plan_render(options, True, 'a', 'b', False)[0], 'render')
         self.assertEqual(plan_render(options, False, 'a', 'a', False)[0], 'render')
-        self.assertEqual(plan_render(options, True, None, 'a', False)[0], 'baseline')
+        self.assertEqual(plan_render(options, True, None, 'a', False), ('render', 'ohne Fingerabdruck'))
         self.assertEqual(plan_render(Options(force=True), True, 'a', 'a', False)[0], 'render')
         self.assertEqual(plan_render(options, True, 'a', 'a', True)[0], 'render')
 

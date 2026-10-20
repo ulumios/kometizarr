@@ -15,12 +15,13 @@ router = APIRouter()
 @router.get('/api/library/{library_name}/browse')
 async def browse_library(library_name: str, parent_key: Optional[int] = None, page: int = 1,
                          page_size: int = 60, q: str = '', episodes: bool = False,
-                         refresh: bool = False, conflicts_only: bool = False, missing_overlay: bool = False):
+                         refresh: bool = False, conflicts_only: bool = False, missing_overlay: bool = False,
+                         tasks: str = ''):
     """Serve indexed Plex media; refresh asynchronously without blocking the UI."""
     try:
         updated_at, result = await asyncio.to_thread(
             library_index.read_library_index, library_name, parent_key, episodes, q, page, page_size, conflicts_only,
-            missing_overlay)
+            missing_overlay, [int(task) for task in tasks.split(',') if task.strip().isdigit()])
         scan = library_index.scans.setdefault(library_name, {'is_running': False, 'error': None})
         if not scan['is_running'] and (refresh or (not updated_at and not scan['error'])):
             scan['is_running'] = True

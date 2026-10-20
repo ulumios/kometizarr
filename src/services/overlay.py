@@ -219,7 +219,8 @@ async def run_overlay(request):
         summary = progress.extra.setdefault('summary', {}) if request.plan_only else {}
 
         def record(result):
-            if request.record_results:
+            # Kept per item for the task list and the library browser; unchanged posters are only counted
+            if request.record_results or not result.startswith('unverändert'):
                 progress.results[str(item.ratingKey)] = result
 
         # Process each item
@@ -280,9 +281,6 @@ async def run_overlay(request):
                 verdict, reason = plan_render(
                     options, manager.backup_manager.has_overlay(request.library_name, item),
                     row.get('render_hash'), new_hash, bool(plan.steps), plan.force_render)
-                if verdict == 'baseline':
-                    mark_item(request.library_name, item, render_hash=new_hash, status='rendered',
-                               uploaded_thumb=getattr(item, 'thumb', None))
                 if verdict != 'render':
                     skip = ('skipped', reason)
 
@@ -291,7 +289,7 @@ async def run_overlay(request):
                 if plan.steps:  # a captured original drops the old overlay file
                     library_index.set_flags(request.library_name, item.ratingKey,
                                             has_overlay=manager.backup_manager.has_overlay(request.library_name, item))
-                if counter != 'skipped' or not reason.startswith(('unverändert', 'Ausgangszustand')):
+                if counter != 'skipped' or not reason.startswith('unverändert'):
                     mark_item(request.library_name, item, status=counter, reason=reason)
                 if plan.remember_conflict:
                     await asyncio.to_thread(conflicts.remember, request.library_name, item)

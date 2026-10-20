@@ -23,7 +23,9 @@ from ..utils.logger import ProgressTracker, print_header, print_subheader, print
 logger = logging.getLogger(__name__)
 
 # Bump when the drawing code changes in a way that should re-render every poster.
-RENDERER_VERSION = 1
+# Raise when the drawing changes: every poster is rendered once more on the next run.
+# 2: posters adopted unrendered from 1.x and those drawn without Kometa images are redrawn.
+RENDERER_VERSION = 2
 
 
 class PlexPosterManager:

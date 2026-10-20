@@ -58,6 +58,30 @@ class OverlayFilterTest(unittest.TestCase):
         self.assertEqual(self.index.kometa_keys('Serien', ['21']), ['23'])
         self.assertEqual(self.index.kometa_keys('Serien', []), [])
 
+    def test_result_filter_keeps_path_to_touched_items(self):
+        related = self.index.related_keys('Serien', ['23'])
+        self.assertEqual(related, {'23', '21', '20'})
+        self.assertEqual([e['key'] for e in self.index.browse('Serien', only_keys=related)['items']], ['20'])
+        self.assertEqual([e['key'] for e in self.index.browse('Serien', parent_key=20, only_keys=related)['items']], ['21'])
+        self.assertEqual([e['key'] for e in self.index.browse('Serien', parent_key=21, only_keys=related)['items']], ['23'])
+        # a selected season stands for its episodes
+        self.assertEqual(self.index.related_keys('Serien', ['21']), {'21', '22', '23', '20'})
+
+    def test_describe_and_ancestors(self):
+        self.assertEqual([row['library'] for row in self.index.describe(['23', '2', 'x'])], ['Serien', 'Filme'])
+        self.assertEqual([entry['key'] for entry in self.index.ancestors('Serien', '23')], ['20', '21'])
+        self.assertEqual(self.index.ancestors('Filme', '2'), [])
+
+    def test_task_outcomes_collect_selection_results_and_kometa(self):
+        from src.services.library_index import task_outcomes
+        task = {'payload': {'library_name': 'Serien', 'rating_keys': ['21']},
+                'progress': {'failed_keys': ['22'], 'kometa_keys': {'Serien': ['23']}},
+                'results': {'22': 'kein Poster'}}
+        self.assertEqual(task_outcomes(task), {'21': None, '22': 'kein Poster', '23': 'Kometa erkannt'})
+        imdb = {'payload': {'library': 'Filme', 'request': {'rating_keys': ['2']}},
+                'results': [{'key': '2', 'render': 'gerendert'}]}
+        self.assertEqual(task_outcomes(imdb), {'2': 'gerendert'})
+
 
 class ScanFlagsTest(unittest.TestCase):
     def test_scan_reads_overlay_files_and_label_search(self):

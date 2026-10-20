@@ -12,7 +12,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
   const [libraries, setLibraries] = useState([])
   const [selectedLibrary, setSelectedLibrary] = useState(null)   // for preview / restore
   const [selectedLibraries, setSelectedLibraries] = useState([]) // for processing (names)
-  const [includeEpisodes, setIncludeEpisodes] = useState(false)
+  const [includeEpisodes, setIncludeEpisodes] = useState(true)
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
   const [position, setPosition] = useState('northwest')  // Keep for backward compat display
@@ -38,10 +38,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
       const data = await res.json()
       if (data.libraries) {
         setLibraries(data.libraries)
-        if (data.libraries.length > 0) {
-          setSelectedLibrary(data.libraries[0])
-          setSelectedLibraries(data.libraries.map(l => l.name)) // select all by default
-        }
+        // Nothing preselected: a run over every library should be a deliberate choice
       }
     } catch (error) {
       console.error('Failed to fetch libraries:', error)
@@ -243,9 +240,16 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
               id="force-checkbox"
             />
             <label htmlFor="force-checkbox" className="text-sm">
-              Force-Lauf: alle Poster neu rendern und Kometa-Poster übernehmen
+              Force: auch unveränderte Poster neu hochladen und Kometa-Poster ohne Nachfrage übernehmen
             </label>
           </div>
+          {!force && (
+            <p className="text-xs text-gray-400">
+              Ein Lauf prüft jedes Poster und rendert ein neues Overlay, sobald sich IMDb-Wertung, Quelle (z. B. BluRay),
+              Serienstatus, Layout, Position oder das Original geändert haben. Unveränderte Poster werden nicht erneut
+              hochgeladen. Poster mit Kometa-Overlay werden übersprungen; danach wird gefragt, ob sie zurückgesetzt werden sollen.
+            </p>
+          )}
           {force && (
             <div className="mt-2 p-3 bg-blue-900/20 border border-blue-700/50 rounded text-sm text-blue-300">
               ℹ️ Rendert jedes Poster aus seinem gesicherten Original neu. Poster mit Kometa-Overlay (Label „Overlay“ oder ein von Kometa gespeichertes Original) werden zuerst auf ein sauberes Original zurückgesetzt – Kometas eigenes Original, wenn /kometa eingebunden ist, sonst das Plex-Agent-Poster – und danach gerendert.

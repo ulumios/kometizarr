@@ -102,11 +102,10 @@ class RunProgress:
                 'total': snap['total'], 'success': snap['success'], 'failed': snap['failed'],
                 'skipped': snap['skipped'], 'current_item': snap['current'],
                 'stop_requested': snap['stop_requested'], 'force_mode': self.force_mode,
-                'task': snap}
+                # per-item results stay in the task list; the live view is sent after every item
+                'task': {key: value for key, value in snap.items() if key != 'results'}}
         if snap['error']:
             view['error'] = snap['error']
-        if self.results:
-            view['item_results'] = snap['results']
         return view
 
     def restore_view(self):
@@ -165,8 +164,9 @@ async def publish(force=False):
     global _last_write, _last_result_count
     from src.services import tasks
     result_count = len(progress.results)
-    if progress.task_id and (force or time.monotonic() - _last_write > 1
-                             or not progress.running or result_count != _last_result_count):
+    # Results grow with every item; writing them at most once a second keeps large runs cheap
+    if progress.task_id and (force or time.monotonic() - _last_write > 1 or not progress.running
+                             or (result_count != _last_result_count and result_count < 50)):
         snap = progress.snapshot()
         await asyncio.to_thread(
             tasks.with_tasks, 'update_progress', progress.task_id,

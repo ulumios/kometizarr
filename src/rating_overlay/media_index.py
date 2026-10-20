@@ -109,7 +109,7 @@ class MediaIndex:
                                 (library, 'overlay_flags', time.time()))
 
     def browse(self, library, parent_key=None, episodes=False, q='', page=1, page_size=60,
-               conflicts_only=False, missing_overlay=False):
+               conflicts_only=False, missing_overlay=False, only_keys=None):
         parent_row = None
         if parent_key is not None:
             parent_row = self.db.execute(
@@ -157,6 +157,11 @@ class MediaIndex:
                 where += (f" AND (({missing}) OR (type='show' AND key IN (SELECT parent_key FROM media "
                           f"WHERE library=? AND type='season' AND key IN ({episodes_missing}))))")
                 params.extend([library, library, library, library])
+            select = 'SELECT key, title, type, year, item_index, series, season FROM media WHERE ' + where
+        if only_keys is not None:
+            # Results of a task: the touched items and the shows/seasons leading to them
+            where += ' AND key IN (SELECT value FROM json_each(?))'
+            params.append(json.dumps(sorted(only_keys)))
             select = 'SELECT key, title, type, year, item_index, series, season FROM media WHERE ' + where
         total = self.db.execute('SELECT count(*) FROM media WHERE ' + where, params).fetchone()[0]
         rows = self.db.execute(select + order + ' LIMIT ? OFFSET ?',
@@ -253,6 +258,44 @@ class MediaIndex:
         with self.db:
             self.db.execute(f'UPDATE media SET {", ".join(f"{name}=?" for name in updates)} WHERE library=? AND key=?',
                             (*updates.values(), library, str(rating_key)))
+
+    def describe(self, keys):
+        """Index rows of rating keys in any library (Plex keys are unique per server)."""
+        keys = [str(key) for key in keys]
+        rows = self.db.execute(
+            'SELECT library, key, title, type, year, item_index, series, season, parent_key FROM media '
+            'WHERE key IN (SELECT value FROM json_each(?))', (json.dumps(keys),))
+        found = {row[1]: dict(zip(('library', 'key', 'title', 'type', 'year', 'index', 'series', 'season',
+                                   'parent_key'), row)) for row in rows}
+        return [found[key] for key in keys if key in found]
+
+    def ancestors(self, library, key):
+        """Show and season above an item, top first, as browse entries."""
+        chain, current = [], str(key)
+        for _ in range(3):
+            row = self.db.execute('SELECT parent_key FROM media WHERE library=? AND key=?', (library, current)).fetchone()
+            if not row or not row[0]:
+                break
+            current = row[0]
+            parent = self.db.execute('SELECT key, title, type, item_index FROM media WHERE library=? AND key=?',
+                                     (library, current)).fetchone()
+            if not parent:
+                break
+            chain.insert(0, dict(zip(('key', 'title', 'type', 'index'), parent)))
+        return chain
+
+    def related_keys(self, library, keys):
+        """The keys plus their show/season and, for a selected show or season, everything below it."""
+        result = {str(key) for key in keys}
+        frontier = set(result)
+        for _ in range(2):  # show -> season -> episode
+            frontier = {row[0] for row in self.db.execute(
+                'SELECT key FROM media WHERE library=? AND parent_key IN (SELECT value FROM json_each(?))',
+                (library, json.dumps(sorted(frontier))))} - result
+            result |= frontier
+        for key in list(keys):
+            result |= {entry['key'] for entry in self.ancestors(library, key)}
+        return result
 
     def kometa_keys(self, library, keys):
         """Selected items (episodes of selected seasons included) that carry a Kometa overlay

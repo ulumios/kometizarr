@@ -8,6 +8,12 @@ from src.services import config, conflicts, library_index, overlay, tasks
 from src.services.models import ProcessRequest
 from src.services.progress import progress, publish
 
+RESTORE_REASONS = {
+    (True, 'restored'): 'Plex-Poster zurückgesetzt', (True, 'skipped'): 'kein Agent-Poster gefunden',
+    (True, 'failed'): 'Zurücksetzen fehlgeschlagen', (False, 'restored'): 'Original wiederhergestellt',
+    (False, 'skipped'): 'kein Backup', (False, 'failed'): 'Wiederherstellen fehlgeschlagen',
+}
+
 logger = logging.getLogger('kometizarr')
 
 
@@ -55,7 +61,9 @@ async def run_restore(request):
             else:
                 outcome = 'failed'
 
-            progress.count('success' if outcome == 'restored' else outcome, item.ratingKey)
+            # Reasons are kept per item so the library browser can show this run's results
+            progress.count('success' if outcome == 'restored' else outcome, item.ratingKey,
+                           reason=RESTORE_REASONS[(request.reset_to_plex, outcome)])
             if outcome == 'restored':
                 library_index.invalidate_browse_poster(request.library_name, item.ratingKey)
                 overlay.mark_item(request.library_name, item, status='original', reason=None)

@@ -57,7 +57,47 @@ function PlanSummary({ task }) {
   </ul>
 }
 
-export default function Tasks() {
+const itemLabel = item => item.type === 'episode'
+  ? `${item.series ? `${item.series} · ` : ''}S${String(item.season ?? 0).padStart(2, '0')}E${String(item.index ?? 0).padStart(2, '0')} · ${item.title}`
+  : item.type === 'season' ? `${item.series || item.path?.[0]?.title || ''} · Staffel ${item.index ?? '–'}`
+  : `${item.title}${item.year ? ` (${item.year})` : ''}`
+
+// Touched items of a task; a click opens the item in the library browser for a manual check
+function TaskItems({ task, onOpenInLibrary }) {
+  const [open, setOpen] = useState(false)
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const toggle = async () => {
+    setOpen(!open)
+    if (open || data) return
+    try {
+      const response = await fetch(`/api/tasks/${task.id}/items`)
+      if (!response.ok) throw Error('Einträge konnten nicht geladen werden')
+      setData(await response.json())
+    } catch (e) { setError(e.message) }
+  }
+  const go = item => onOpenInLibrary({ library: item.library, path: item.path, key: item.key, taskId: task.id })
+  return <div className="mt-2">
+    <button onClick={toggle} className="text-xs text-blue-300 hover:underline">{open ? '▾ Einträge ausblenden' : '▸ Einträge anzeigen'}</button>
+    {open && <div className="mt-2 space-y-1">
+      {error && <p className="text-xs text-red-300">{error}</p>}
+      {!data && !error && <p className="text-xs text-gray-400">Lade…</p>}
+      {data && data.items.length === 0 && <p className="text-xs text-gray-400">Keine Einträge gespeichert (unveränderte Poster werden nur gezählt).</p>}
+      {data && data.items.length > 0 && <>
+        <button onClick={() => go({ ...data.items[0], path: [], key: null })} className="text-xs bg-gray-700 hover:bg-gray-600 rounded px-2 py-1">
+          Alle in der Bibliothek anzeigen</button>
+        <ul className="max-h-72 overflow-auto divide-y divide-gray-700/60 text-xs">{data.items.map(item => <li key={item.key}>
+          <button onClick={() => go(item)} className="w-full text-left py-1.5 flex flex-wrap gap-x-3 hover:bg-gray-700/40 rounded px-1">
+            <span className="text-blue-200 min-w-0 break-words">{itemLabel(item)}</span>
+            {item.result && <span className={/fehl|nicht|Kometa/.test(item.result) ? 'text-amber-300' : 'text-gray-400'}>{item.result}</span>}
+          </button></li>)}</ul>
+        {data.missing > 0 && <p className="text-xs text-gray-500">{data.missing} Einträge fehlen im Bibliotheksindex (Bibliothek neu scannen).</p>}
+      </>}
+    </div>}
+  </div>
+}
+
+export default function Tasks({ onOpenInLibrary }) {
   const [tasks, setTasks] = useState([])
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
@@ -91,6 +131,9 @@ export default function Tasks() {
         <TaskProgress task={task} />
         <PlanSummary task={task} />
         <MaintenanceResult task={task} />
+        {['process', 'webhook', 'restore', 'fresh_posters', 'imdb', 'selected_imdb', 'conflict', 'arr'].includes(task.kind) && task.status !== 'queued' &&
+          (task.result_count > 0 || task.progress?.failed_keys?.length > 0 || task.payload?.rating_keys?.length > 0 || task.payload?.request?.rating_keys?.length > 0) &&
+          <TaskItems task={task} onOpenInLibrary={onOpenInLibrary} />}
         <div className="flex gap-2 mt-2">
           {task.kind === 'plan' && task.status === 'completed' &&
             <button onClick={() => follow(task, 'run-plan')} className="bg-blue-600 hover:bg-blue-700 rounded px-3 py-1 text-xs">Plan ausführen</button>}

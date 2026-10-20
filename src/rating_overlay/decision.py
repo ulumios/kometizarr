@@ -112,7 +112,10 @@ def plan_item(facts: Facts, options: Options) -> Plan:
 
 def plan_render(options: Options, has_overlay: bool, stored_hash: Optional[str],
                 new_hash: str, new_original: bool, force_render: bool = False):
-    """('render', reason) or ('skip', reason) / ('baseline', reason) for an evaluated item."""
+    """('render', reason) or ('skip', reason) for an evaluated item.
+
+    Every run checks every poster: ratings, source, series status, layout, position and the
+    original are in the fingerprint, so any change renders a new overlay."""
     if options.operation or options.force:
         return 'render', 'erzwungen'
     if force_render:
@@ -122,8 +125,8 @@ def plan_render(options: Options, has_overlay: bool, stored_hash: Optional[str],
     if not has_overlay:
         return 'render', 'neu'
     if stored_hash is None:
-        # Rendered by an older version: adopt the current state instead of re-uploading everything
-        return 'baseline', 'Ausgangszustand übernommen'
+        # Rendered by an older version: its look is unknown, so render it once
+        return 'render', 'ohne Fingerabdruck'
     if stored_hash == new_hash:
         return 'skip', 'unverändert'
     return 'render', 'Wertung oder Design geändert'

@@ -93,6 +93,10 @@ async def websocket_progress(websocket: WebSocket):
 @router.get('/api/tasks')
 async def list_tasks():
     rows = await asyncio.to_thread(tasks.with_tasks, 'list')
+    for task in rows:
+        # Polled every few seconds: send the size only, the items come from /items
+        results = task.pop('results', None)
+        task['result_count'] = len(results) if isinstance(results, (dict, list)) else 0
     if progress.running:
         snap = progress.snapshot()
         for task in rows:
@@ -126,6 +130,13 @@ async def _task_or_404(task_id):
     if task is None:
         raise HTTPException(404, 'Task not found')
     return task
+
+
+@router.get('/api/tasks/{task_id}/items')
+async def task_items(task_id: int):
+    """Items a task touched, with titles and the show/season path to open them in the library browser."""
+    task = await _task_or_404(task_id)
+    return await asyncio.to_thread(library_index.task_items, task)
 
 
 @router.post('/api/tasks/{task_id}/run-plan')

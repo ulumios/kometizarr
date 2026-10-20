@@ -72,6 +72,17 @@ function App() {
     return () => clearTimeout(timer)
   }, [progressData?.is_processing, progressData?.is_restoring, progressData?.progress])
 
+  // From the task list: open the library browser at the item's show/season, filtered to the task
+  const openInLibrary = ({ library, path = [], key = null, taskId }) => {
+    try {
+      sessionStorage.setItem('kometizarr-browser', JSON.stringify({
+        library, parent: path.at(-1) || null, trail: path.length ? [null, ...path.slice(0, -1)] : [],
+        page: 1, search: '', resultFilter: taskId ? { tasks: [taskId] } : null, focusKey: key,
+      }))
+    } catch { /* private mode: the browser opens at its start */ }
+    setActiveTab('browser')
+  }
+
   // Show loading state while checking for active processing
   if (checkingStatus) {
     return (
@@ -186,7 +197,7 @@ function App() {
             ) : activeTab === 'browser' ? (
               <LibraryBrowser onStartProcessing={() => { setProgressData(null); setShowProgressBanner(true); setProcessing(true) }} />
             ) : activeTab === 'tasks' ? (
-              <Tasks />
+              <Tasks onOpenInLibrary={openInLibrary} />
             ) : activeTab === 'maintenance' ? (
               <Maintenance onOpenTasks={() => setActiveTab('tasks')} />
             ) : activeTab === 'status' ? (

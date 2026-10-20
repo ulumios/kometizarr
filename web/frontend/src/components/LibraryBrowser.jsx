@@ -12,7 +12,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [trail, setTrail] = useState(saved.trail || [])
   const [page, setPage] = useState(saved.page || 1)
   const [search, setSearch] = useState(saved.search || '')
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState((saved.search || '').trim())
   const [searchEpisodes, setSearchEpisodes] = useState(saved.searchEpisodes || false)
   const [conflictsOnly, setConflictsOnly] = useState(saved.conflictsOnly || false)
   // Items without a Kometizarr overlay; Kometa-overlaid items (label or conflict) stay hidden
@@ -35,21 +35,27 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [imdbJob, setImdbJob] = useState(null)
   const [kometaAsk, setKometaAsk] = useState(null)  // {count} before an IMDb run on Kometa posters
   const [kometaDone, setKometaDone] = useState(false)
+  // Results of a run: only the touched items (and the shows/seasons leading to them) are listed
+  const [resultFilter, setResultFilter] = useState(saved.resultFilter || null)  // {tasks: [ids]}
+  const [focusKey, setFocusKey] = useState(saved.focusKey || null)  // item opened from the task list
 
   useEffect(() => {
     sessionStorage.setItem('kometizarr-browser', JSON.stringify({
-      library, parent, trail, page, search, searchEpisodes, conflictsOnly, missingOverlay,
+      library, parent, trail, page, search, searchEpisodes, conflictsOnly, missingOverlay, resultFilter,
     }))
-  }, [library, parent, trail, page, search, searchEpisodes, conflictsOnly, missingOverlay])
+  }, [library, parent, trail, page, search, searchEpisodes, conflictsOnly, missingOverlay, resultFilter])
 
   useEffect(() => {
     if (!pendingJob) return undefined
     const poll = () => fetch(`/api/tasks/${pendingJob.id}/status`).then(r => r.json()).then(task => {
       if (!['completed', 'failed'].includes(task.status)) return
-      const version = Date.now()
-      setPosterVersions(previous => Object.fromEntries([
-        ...Object.entries(previous), ...pendingJob.keys.map(key => [String(key), version]),
-      ]))
+      setPosterVersion(Date.now())
+      // Show what the run touched, starting at the top (shows), from where seasons and episodes open
+      if (pendingJob.library === library) {
+        setResultFilter({ tasks: pendingJob.ids || [pendingJob.id] })
+        setParent(null); setTrail([]); setPage(1); setSearch(''); setQuery('')
+        setConflictsOnly(false); setMissingOverlay(false); setSearchEpisodes(false)
+      }
       setReload(value => value + 1)
       setPendingJob(null)
       sessionStorage.removeItem('kometizarr-browser-job')
@@ -60,7 +66,9 @@ export default function LibraryBrowser({ onStartProcessing }) {
   }, [pendingJob])
 
   useEffect(() => {
-    const timer = setTimeout(() => { setQuery(search.trim()); setPage(1) }, 250)
+    const timer = setTimeout(() => {
+      if (search.trim() !== query) { setQuery(search.trim()); setPage(1) }
+    }, 250)
     return () => clearTimeout(timer)
   }, [search])
 
@@ -102,13 +110,20 @@ export default function LibraryBrowser({ onStartProcessing }) {
     if (searchEpisodes && !parent) params.set('episodes', 'true')
     if (conflictsOnly) params.set('conflicts_only', 'true')
     if (missingOverlay) params.set('missing_overlay', 'true')
+    if (resultFilter) params.set('tasks', resultFilter.tasks.join(','))
     fetch(`/api/library/${encodeURIComponent(library)}/browse?${params}`)
       .then(async r => { const data = await r.json(); if (!r.ok) throw Error(data.detail || 'Library unavailable'); return data })
       .then(data => { if (active) { setItems(data.items); setTotal(data.total); setIndexing(!!data.is_running); setFlagsReady(data.overlay_flags_ready !== false); if (data.error) setError(data.error) } })
       .catch(e => { if (active) setError(e.message) })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [library, parent, page, query, searchEpisodes, conflictsOnly, missingOverlay, reload])
+  }, [library, parent, page, query, searchEpisodes, conflictsOnly, missingOverlay, resultFilter, reload])
+
+  useEffect(() => {
+    if (!focusKey || loading) return
+    const element = document.getElementById(`browser-item-${focusKey}`)
+    if (element) element.scrollIntoView({ block: 'center' })
+  }, [focusKey, loading, items])
 
   useEffect(() => {
     if (!indexing) return
@@ -116,13 +131,13 @@ export default function LibraryBrowser({ onStartProcessing }) {
     return () => clearTimeout(timer)
   }, [indexing, reload])
 
-  const switchLibrary = name => { setLibrary(name); setParent(null); setTrail([]); setSearch(''); setSearchEpisodes(false); setPage(1); setSelected([]); setImdbJob(null) }
+  const switchLibrary = name => { setLibrary(name); setParent(null); setTrail([]); setSearch(''); setSearchEpisodes(false); setPage(1); setSelected([]); setImdbJob(null); setResultFilter(null); setFocusKey(null) }
   const openFolder = item => { setTrail(previous => [...previous, parent]); setParent(item); setSearch(''); setPage(1); setSelected([]) }
   const goBack = () => { setParent(trail.at(-1) || null); setTrail(previous => previous.slice(0, -1)); setSearch(''); setPage(1); setSelected([]) }
   const toggle = key => setSelected(previous => previous.includes(key) ? previous.filter(k => k !== key) : [...previous, key])
   const allVisible = items.length > 0 && items.every(item => selected.includes(item.key))
   const episodeView = parent?.type === 'season' || (searchEpisodes && items.some(item => item.type === 'episode'))
-  const launch = async reset => {
+  const launch = async (reset, thenImdb = false) => {
     if (!selected.length || busy) return
     setBusy(true)
     setError('')
@@ -130,13 +145,24 @@ export default function LibraryBrowser({ onStartProcessing }) {
       const response = await fetch(reset ? '/api/restore' : '/api/process', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ library_name: library, rating_keys: selected, force: false,
-          operation: reset ? 'reset_plex' : 'current_overlay',
+          operation: reset ? 'reset_plex' : 'current_overlay', record_results: true,
           poster_source: reset ? null : 'current', reset_to_plex: reset }),
       })
       const data = await response.json()
       if (!response.ok || data.error || data.status !== 'started') throw Error(data.error || data.detail || 'Could not start')
+      const ids = [data.task_id]
+      if (thenImdb) {
+        // Queued behind the reset, so it renders from the freshly selected Plex poster
+        const imdb = await fetch(`/api/library/${encodeURIComponent(library)}/selected-imdb`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rating_keys: selected, mode: 'both' }),
+        })
+        const imdbData = await imdb.json()
+        if (!imdb.ok) throw Error(imdbData.detail || 'IMDb-Lauf konnte nicht gestartet werden')
+        ids.push(imdbData.task_id)
+      }
       setConfirmReset(false)
-      const job = { id: data.task_id, keys: [...selected] }
+      const job = { id: ids.at(-1), ids, library, keys: [...selected] }
       sessionStorage.setItem('kometizarr-browser-job', JSON.stringify(job))
       setPendingJob(job)
       setSelected([])
@@ -170,7 +196,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
       })
       const data = await response.json()
       if (!response.ok) throw Error(data.detail || 'IMDb-Lauf konnte nicht gestartet werden')
-      const job = { id: data.task_id, keys: [...selected] }
+      const job = { id: data.task_id, ids: [data.task_id], library, keys: [...selected] }
       sessionStorage.setItem('kometizarr-browser-job', JSON.stringify(job))
       setPendingJob(job)
       setSelected([])
@@ -193,6 +219,10 @@ export default function LibraryBrowser({ onStartProcessing }) {
           <input type="checkbox" checked={searchEpisodes} onChange={e => { setSearchEpisodes(e.target.checked); setPage(1); setSelected([]) }} /> Episoden anzeigen
         </label>}
       </div>
+      {resultFilter && <div className="mt-3 flex flex-wrap items-center gap-3 bg-blue-950/50 border border-blue-700 rounded px-3 py-2 text-sm">
+        <span className="mr-auto">Ergebnis von Aufgabe {resultFilter.tasks.map(id => `#${id}`).join(' + ')}: nur betroffene Titel</span>
+        <button className="text-blue-300 underline" onClick={() => { setResultFilter(null); setFocusKey(null); setPage(1) }}>Filter aufheben</button>
+      </div>}
       {indexing && <p className="text-sm text-blue-300 mt-2">Bibliothek wird im Hintergrund indexiert…</p>}
       {missingOverlay && !flagsReady && !indexing && <p className="text-sm text-yellow-300 mt-2">
         Für den Filter „Nur ohne Overlay“ muss die Bibliothek einmal neu gescannt werden.{' '}
@@ -210,13 +240,14 @@ export default function LibraryBrowser({ onStartProcessing }) {
         <button disabled={!items.length} onClick={() => setSelected(previous => allVisible ? previous.filter(k => !items.some(item => item.key === k)) : [...new Set([...previous, ...items.map(item => item.key)])])}
           className="text-sm text-blue-300 disabled:text-gray-600">{allVisible ? 'Sichtbare abwählen' : 'Sichtbare auswählen'}</button></div>
       </div>
-      <div className={`grid grid-cols-2 sm:grid-cols-3 gap-4 ${episodeView ? 'lg:grid-cols-3 xl:grid-cols-4' : 'lg:grid-cols-5 xl:grid-cols-6'}`}>{items.map(item => <div key={item.key} className={`rounded-lg border overflow-hidden ${selected.includes(item.key) ? 'border-blue-500 bg-blue-950/30' : 'border-gray-600 bg-gray-900'}`}>
+      <div className={`grid grid-cols-2 sm:grid-cols-3 gap-4 ${episodeView ? 'lg:grid-cols-3 xl:grid-cols-4' : 'lg:grid-cols-5 xl:grid-cols-6'}`}>{items.map(item => <div key={item.key} id={`browser-item-${item.key}`} className={`rounded-lg border overflow-hidden ${selected.includes(item.key) ? 'border-blue-500 bg-blue-950/30' : 'border-gray-600 bg-gray-900'} ${focusKey === item.key ? 'ring-2 ring-amber-400' : ''}`}>
         <button type="button" onClick={() => toggle(item.key)} aria-label={`${item.title} auswählen`} className={`relative block w-full bg-gray-950 ${item.type === 'episode' ? 'aspect-video' : 'aspect-[2/3]'}`}>
           <span className="absolute inset-0 flex items-center justify-center text-xs text-gray-500 p-3">Kein Poster verfügbar</span>
           <img loading="lazy" src={`/api/library/${encodeURIComponent(library)}/poster/${encodeURIComponent(item.key)}?v=${posterVersions[String(item.key)] || posterVersion}`} alt="" className="absolute inset-0 w-full h-full object-cover" onLoad={event => { event.currentTarget.style.display = '' }} onError={event => { event.currentTarget.style.display = 'none' }} />
           <span className={`absolute top-2 right-2 rounded px-2 py-1 text-sm ${selected.includes(item.key) ? 'bg-blue-600 text-white' : 'bg-gray-900/90 text-gray-200'}`}>{selected.includes(item.key) ? '✓' : '○'}</span>
         </button>
         <div className="p-2.5"><div className="text-sm truncate" title={item.title}>{item.type === 'season' ? `Staffel ${item.index ?? '–'} · ` : item.type === 'episode' ? `${item.series ? `${item.series} · ` : ''}S${String(item.season ?? 0).padStart(2, '0')}E${String(item.index ?? 0).padStart(2, '0')} · ` : ''}{item.title} {item.year ? `(${item.year})` : ''}</div>
+        {item.result && <div className={`text-xs mt-1 ${/fehl|nicht|Kometa/.test(item.result) ? 'text-amber-300' : 'text-gray-400'}`} title={item.result}>{item.result}</div>}
         {['show', 'season'].includes(item.type) && <button className="text-blue-300 text-xs mt-1" onClick={() => openFolder(item)}>{item.type === 'show' ? 'Staffeln anzeigen' : 'Episoden anzeigen'} →</button>}</div>
       </div>)}</div>
       {total > 60 && <div className="flex items-center gap-4 mt-5"><button disabled={page === 1} onClick={() => setPage(page - 1)}>← Zurück</button><span>Seite {page} / {Math.ceil(total / 60)}</span><button disabled={page * 60 >= total} onClick={() => setPage(page + 1)}>Weiter →</button></div>}
@@ -236,7 +267,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
       {!imdbJob.is_running && kometaCount(imdbJob) > 0 && imdbJob.task_id && !kometaDone && <div className="bg-amber-900/30 border border-amber-700/60 rounded p-3 space-y-2">
         <p className="text-sm text-amber-200">{kometaQuestion(kometaCount(imdbJob))}</p>
         <div className="flex flex-wrap gap-2">
-          <button onClick={async () => { try { const id = await startKometaReset(imdbJob.task_id); setKometaDone(true); const job = { id, keys: Object.values(imdbJob.kometa_keys).flat() }; sessionStorage.setItem('kometizarr-browser-job', JSON.stringify(job)); setPendingJob(job); onStartProcessing() } catch (e) { setError(e.message) } }}
+          <button onClick={async () => { try { const id = await startKometaReset(imdbJob.task_id); setKometaDone(true); const job = { id, ids: [id], library, keys: Object.values(imdbJob.kometa_keys).flat() }; sessionStorage.setItem('kometizarr-browser-job', JSON.stringify(job)); setPendingJob(job); onStartProcessing() } catch (e) { setError(e.message) } }}
             className="px-3 py-1.5 rounded bg-amber-600 text-sm">Zurücksetzen und overlayen</button>
           <button onClick={() => setKometaDone(true)} className="px-3 py-1.5 rounded bg-gray-700 text-sm">Nein</button>
         </div>
@@ -258,9 +289,14 @@ export default function LibraryBrowser({ onStartProcessing }) {
       </div>
     </div></div>}
     {confirmReset && <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"><div className="bg-gray-800 border border-gray-600 rounded-xl p-6 max-w-md space-y-4">
-      <h3 className="text-lg font-semibold">Plex-Poster zurücksetzen?</h3>
+      <h3 className="text-lg font-semibold">{selected.length} Plex-Poster zurücksetzen?</h3>
       <p className="text-sm text-gray-300">Für die Auswahl wird das erste verfügbare Poster ohne Upload aus Plex gewählt. Einträge ohne solches Poster werden übersprungen.</p>
-      <div className="flex gap-3"><button onClick={() => setConfirmReset(false)} className="px-4 py-2 bg-gray-700 rounded">Abbrechen</button><button disabled={busy} onClick={() => launch(true)} className="px-4 py-2 bg-orange-700 rounded">{selected.length} Einträge zurücksetzen</button></div>
+      <p className="text-sm text-gray-300">Soll danach gleich ein Overlay mit aktueller IMDb-Wertung gerendert werden?</p>
+      <div className="flex flex-wrap gap-3">
+        <button disabled={busy} onClick={() => launch(true, true)} className="px-4 py-2 bg-emerald-700 rounded">Zurücksetzen und IMDb-Overlay</button>
+        <button disabled={busy} onClick={() => launch(true)} className="px-4 py-2 bg-orange-700 rounded">Nur zurücksetzen</button>
+        <button onClick={() => setConfirmReset(false)} className="px-4 py-2 bg-gray-700 rounded">Abbrechen</button>
+      </div>
     </div></div>}
   </section>
 }
