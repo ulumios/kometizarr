@@ -4,16 +4,25 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 
+# Tokens are separated by dots, spaces, dashes or brackets: "Film (2020) [Bluray-720p].mkv"
+_SEP = r'[. _\-\[\](){}]'
+# Radarr/Sonarr name BluRay remuxes "Remux-1080p"
+BLURAY = re.compile(rf'(?i)(?:^|{_SEP})(?:blu[ ._-]?ray|bdrip|brrip|bdremux|remux)(?:{_SEP}|$)')
+PRERELEASE = re.compile(rf'(?i)(?:^|{_SEP})(?:cam|hdcam|ts|telesync|tc|telecine|scr|screener|dvdscr|r5)(?:{_SEP}|$)')
+
+
 def source_label(item, settings=None):
-    """Prefer BluRay; otherwise label known low quality release sources."""
+    """Prefer BluRay; otherwise label known low quality release sources.
+
+    The file name decides; the folder name only when the file name says nothing."""
     labels = (settings or {}).get('source_labels') or {}
-    for media in getattr(item, 'media', []) or []:
-        for part in getattr(media, 'parts', []) or []:
-            name = Path(getattr(part, 'file', '') or '').name
-            if re.search(r'(?i)(?:^|[. _-])(?:blu[ ._-]?ray|bdrip|brrip|bdremux)(?:[. _-]|$)', name):
-                return labels.get('bluray', 'BluRay')
-            if re.search(r'(?i)(?:^|[. _-])(?:cam|hdcam|ts|telesync|tc|telecine|scr|screener|dvdscr|r5)(?:[. _-]|$)', name):
-                return labels.get('prerelease', 'PreRelease')
+    files = [Path(getattr(part, 'file', '') or '')
+             for media in getattr(item, 'media', []) or [] for part in getattr(media, 'parts', []) or []]
+    for names in ([path.name for path in files], [path.parent.name for path in files]):
+        if any(BLURAY.search(name) for name in names):
+            return labels.get('bluray', 'BluRay')
+        if any(PRERELEASE.search(name) for name in names):
+            return labels.get('prerelease', 'PreRelease')
     return None
 
 
