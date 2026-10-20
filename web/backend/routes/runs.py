@@ -150,3 +150,22 @@ async def retry_failed(task_id: int):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {'status': 'started', 'task_id': await tasks.enqueue(kind, payload), 'items': len(keys)}
+
+
+@router.post('/api/tasks/{task_id}/kometa-reset')
+async def reset_kometa_skipped(task_id: int):
+    """Run the items a task skipped because of Kometa again, resetting Kometa's poster first."""
+    task = await _task_or_404(task_id)
+    groups = ((task.get('progress') or {}).get('kometa_keys')) or {}
+    payload = task.get('payload') or {}
+    imdb = task['kind'] in ('imdb', 'selected_imdb') or payload.get('operation') == 'imdb_overlay'
+    started = []
+    for library, keys in groups.items():
+        if keys:
+            started.append(await tasks.enqueue('process', ProcessRequest(
+                library_name=library, rating_keys=keys, reset_kometa=True, force=imdb,
+                operation='imdb_overlay' if imdb else None, use_imdb_cache=imdb).model_dump()))
+    if not started:
+        raise HTTPException(400, 'Keine wegen Kometa übersprungenen Einträge gespeichert')
+    return {'status': 'started', 'task_id': started[-1], 'task_ids': started,
+            'items': sum(len(keys) for keys in groups.values())}

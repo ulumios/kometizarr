@@ -59,8 +59,9 @@ def plan_item(facts: Facts, options: Options) -> Plan:
     imdb_overlay = options.operation == 'imdb_overlay'
     plan = Plan()
 
-    if imdb_overlay and (facts.kometa_label or facts.recorded_conflict
-                         or (facts.kometa_untagged and not facts.has_overlay)):
+    # Without reset_kometa the IMDb run leaves Kometa posters alone; the UI then asks
+    if imdb_overlay and not options.reset_kometa and (
+            facts.kometa_label or facts.recorded_conflict or (facts.kometa_untagged and not facts.has_overlay)):
         return Plan.skipped('skipped', 'Kometa-Konflikt: übersprungen', remember_conflict=True)
     has_overlay = facts.has_overlay
     if not current_overlay and facts.manual_state == 'waiting':
@@ -72,7 +73,8 @@ def plan_item(facts: Facts, options: Options) -> Plan:
 
     # Kometa overlaid the poster: its label, or (label removed) its stored original.
     # A force run takes these over like the automatic reset does.
-    kometa_poster = facts.kometa_label or (facts.kometa_untagged and not has_overlay)
+    kometa_poster = facts.kometa_label or (not has_overlay and (
+        facts.kometa_untagged or (options.reset_kometa and facts.recorded_conflict)))
     if not current_overlay and kometa_poster:
         needs_reset = options.reset_kometa or (
             not has_overlay and (options.auto_reset_kometa or options.force))
@@ -98,12 +100,12 @@ def plan_item(facts: Facts, options: Options) -> Plan:
         plan.origin = 'current_with_label' if facts.kometa_label else 'current'
 
     if imdb_overlay:
-        if facts.origin == 'current_with_label':
+        if facts.origin == 'current_with_label' and plan.origin is None:
             return Plan.skipped('skipped', 'Unsicheres Original: Kometa-Poster')
-        if not facts.has_original:
+        if not facts.has_original and plan.origin is None:
             plan.steps.append('capture_if_missing')
             plan.origin = plan.origin or 'current'
-        elif not facts.origin:
+        elif not facts.origin and plan.origin is None:
             plan.origin = 'existing_backup'
     return plan
 

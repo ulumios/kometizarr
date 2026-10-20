@@ -1,7 +1,6 @@
 """Library listing, statistics, browsing index and poster proxy."""
 
 import asyncio
-import os
 import time
 from typing import Optional
 
@@ -70,12 +69,12 @@ async def browse_poster(library_name: str, rating_key: int):
             raise HTTPException(404, 'Poster not found')
         from urllib.parse import urljoin
         poster_url = thumb if thumb.startswith(('http://', 'https://')) else (
-            server.url(thumb) if server is not None else urljoin(os.getenv('PLEX_URL').rstrip('/') + '/', thumb.lstrip('/')))
+            server.url(thumb) if server is not None else urljoin(config.credential('plex_url').rstrip('/') + '/', thumb.lstrip('/')))
         if server is None:
             import requests
-            image = requests.get(poster_url, headers={'X-Plex-Token': os.getenv('PLEX_TOKEN')}, timeout=20)
+            image = requests.get(poster_url, headers={'X-Plex-Token': config.credential('plex_token')}, timeout=20)
         else:
-            image = server._session.get(poster_url, headers={'X-Plex-Token': os.getenv('PLEX_TOKEN')}, timeout=20)
+            image = server._session.get(poster_url, headers={'X-Plex-Token': config.credential('plex_token')}, timeout=20)
         image.raise_for_status()
         if not image.headers.get('Content-Type', '').startswith('image/'):
             raise HTTPException(502, 'Plex did not return an image')
@@ -101,8 +100,8 @@ async def browse_poster(library_name: str, rating_key: int):
 async def get_libraries():
     """Get all Plex libraries - optimized for speed"""
     try:
-        if not os.getenv('PLEX_URL') or not os.getenv('PLEX_TOKEN'):
-            return {"error": "PLEX_URL and PLEX_TOKEN must be configured"}
+        if not config.credential('plex_url') or not config.credential('plex_token'):
+            return {"error": "Plex-Server und Token fehlen (Settings → Verbindungen)"}
 
         server = config.plex_server()
         libraries = []
@@ -171,3 +170,18 @@ async def start_library_scan(request: LibraryScanRequest):
         raise HTTPException(404, f'Unknown library: {unknown[0]}')
     started = [name for name in request.libraries if library_index.start_scan(name)]
     return {'status': 'started', 'libraries': started}
+
+
+@router.post('/api/library/{library_name}/kometa-check')
+async def kometa_check(library_name: str, body: dict):
+    """Which of the selected items would be skipped because Kometa overlaid them."""
+    from src.rating_overlay.media_index import MediaIndex
+
+    def read():
+        index = MediaIndex()
+        try:
+            return index.kometa_keys(library_name, body.get('rating_keys') or [])
+        finally:
+            index.close()
+    keys = await asyncio.to_thread(read)
+    return {'count': len(keys), 'keys': keys}

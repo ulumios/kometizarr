@@ -295,6 +295,8 @@ async def run_overlay(request):
                     mark_item(request.library_name, item, status=counter, reason=reason)
                 if plan.remember_conflict:
                     await asyncio.to_thread(conflicts.remember, request.library_name, item)
+                    if not request.plan_only:
+                        progress.kometa_skipped(request.library_name, item.ratingKey)
                 progress.count(counter, item.ratingKey)
                 record(reason)
                 await publish()

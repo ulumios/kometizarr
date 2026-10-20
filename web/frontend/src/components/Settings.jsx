@@ -124,6 +124,14 @@ function CronCard({ label, desc, color, cron, libraries, onChange }) {
       </div>
 
       {cron.enabled && (
+        <label className="mt-4 flex items-center gap-2 text-sm text-gray-300">
+          <input type="checkbox" checked={!!cron.include_episodes}
+            onChange={e => onChange({ ...cron, include_episodes: e.target.checked })} />
+          Episoden mit bearbeiten <span className="text-xs text-gray-500">(nur Serien-Bibliotheken)</span>
+        </label>
+      )}
+
+      {cron.enabled && (
         <div className="mt-4 space-y-3">
           {/* Library checkboxes */}
           <div>
@@ -240,6 +248,85 @@ function CronCard({ label, desc, color, cron, libraries, onChange }) {
   )
 }
 
+// ── Connections: Plex server and API keys ─────────────────────────────────────
+
+const CONNECTION_FIELDS = [
+  ['plex_url', 'Plex-Server-URL', 'http://192.168.1.20:32400'],
+  ['plex_token', 'Plex-Token', ''],
+  ['tmdb_api_key', 'TMDB API-Key', ''],
+  ['omdb_api_key', 'OMDb API-Key (optional)', ''],
+  ['mdblist_api_key', 'MDBList API-Key (optional)', ''],
+]
+const SECRET_FIELDS = ['plex_token', 'tmdb_api_key', 'omdb_api_key', 'mdblist_api_key']
+
+function Connections({ connections, info, onChange }) {
+  const [checks, setChecks] = useState(null)
+  const [testing, setTesting] = useState(false)
+  const test = async () => {
+    setTesting(true)
+    try {
+      const response = await fetch('/api/connections/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(connections),
+      })
+      setChecks((await response.json()).checks || [])
+    } catch (e) { setChecks([{ name: 'Verbindung', state: 'error', detail: e.message }]) }
+    finally { setTesting(false) }
+  }
+  const colors = { ok: 'text-green-400', missing: 'text-gray-400', warning: 'text-yellow-300', error: 'text-red-400' }
+  return (
+    <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
+      <div>
+        <h2 className="text-white font-semibold text-base">🔌 Verbindungen</h2>
+        <p className="text-xs text-gray-400 mt-1">Hier eingetragene Werte gelten vor den Umgebungsvariablen aus docker-compose. Schlüssel werden nicht wieder angezeigt; ein leeres Feld behält den gespeicherten Wert.</p>
+      </div>
+      {CONNECTION_FIELDS.map(([name, label, example]) => {
+        const secret = SECRET_FIELDS.includes(name)
+        const meta = info?.[name] || {}
+        const value = connections?.[name]
+        const removing = secret && value === ''
+        const source = meta.source === 'settings' ? 'im Webinterface gespeichert'
+          : meta.source === 'env' ? `aus Umgebungsvariable ${meta.env}` : 'nicht gesetzt'
+        return (
+          <div key={name}>
+            <label className="text-xs text-gray-400 block mb-1" htmlFor={`connection-${name}`}>{label}</label>
+            <div className="flex gap-2">
+              <input id={`connection-${name}`} type={secret ? 'password' : 'text'} autoComplete="off"
+                value={value || ''} disabled={removing}
+                placeholder={secret ? (meta.hint ? `gesetzt (${meta.hint})` : 'nicht gesetzt') : (meta.source === 'env' ? meta.hint : example)}
+                onChange={e => onChange({ ...connections, [name]: secret && !e.target.value ? null : e.target.value })}
+                className="flex-1 min-w-0 px-3 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm text-white font-mono disabled:opacity-50" />
+              {secret && meta.source === 'settings' && (
+                <button type="button" onClick={() => onChange({ ...connections, [name]: removing ? null : '' })}
+                  className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs text-white">
+                  {removing ? 'Behalten' : 'Entfernen'}
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-gray-500 mt-1">{removing ? `Wird beim Speichern entfernt${meta.env ? `, danach gilt ${meta.env}` : ''}` : source}</p>
+          </div>
+        )
+      })}
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" onClick={test} disabled={testing}
+          className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded text-sm text-white">
+          {testing ? 'Prüfe…' : 'Verbindung testen'}
+        </button>
+        <span className="text-xs text-gray-500">Testet die eingetragenen Werte, auch ungespeichert.</span>
+      </div>
+      {checks && <ul className="space-y-1 text-sm">{checks.map(check => (
+        <li key={check.name} className="flex gap-2"><span className={`w-20 shrink-0 ${colors[check.state] || 'text-gray-300'}`}>{check.name}</span>
+          <span className="text-gray-300 min-w-0 break-words">{check.detail}</span></li>
+      ))}</ul>}
+    </section>
+  )
+}
+
+// Everything the save bar stores; next_run is shown, not saved
+const EDITABLE = ['connections', 'media_overlay', 'cron_normal', 'cron_force', 'imdb_direct',
+  'kometa_conflicts', 'kometa', 'lost_overlay', 'webhook']
+const editable = settings => JSON.stringify(EDITABLE.map(key => settings?.[key] ?? null),
+  (key, value) => key === 'next_run' ? undefined : value)
+
 // ── Main Settings component ───────────────────────────────────────────────────
 
 export default function Settings() {
@@ -247,6 +334,7 @@ export default function Settings() {
   const [settings, setSettings] = useState(null)
   const [saving, setSaving] = useState(false)
   const [savedMsg, setSavedMsg] = useState('')
+  const [baseline, setBaseline] = useState('')  // editable part as last saved
   const [imdbSync, setImdbSync] = useState(null)
   const [imdbError, setImdbError] = useState('')
 
@@ -287,6 +375,7 @@ export default function Settings() {
     fetch('/api/imdb-sync/status').then(r => r.json()).then(setImdbSync).catch(() => {})
     fetch('/api/settings').then(r => r.json()).then(data => {
       setSettings(data)
+      setBaseline(editable(data))
     })
   }, [])
 
@@ -319,17 +408,29 @@ export default function Settings() {
       body: JSON.stringify(merged),
     })
     const data = await res.json()
+    setSaving(false)
+    if (!res.ok) {
+      setSavedMsg('✗ Speichern fehlgeschlagen')
+      setTimeout(() => setSavedMsg(''), 4000)
+      return false
+    }
     // Keep unsaved edits of other sections; only the saved part comes from the server.
-    setSettings(s => ({
+    const apply = s => ({
       ...s,
       ...patch,
       cron_normal: { ...(patch.cron_normal || s.cron_normal), next_run: data.cron_normal_next_run },
       cron_force: { ...(patch.cron_force || s.cron_force), next_run: data.cron_force_next_run },
-    }))
-    setSaving(false)
-    setSavedMsg('Saved!')
-    setTimeout(() => setSavedMsg(''), 2000)
+      ...(patch.connections ? { connections: data.connections, connections_info: data.connections_info } : {}),
+    })
+    setSettings(apply)
+    setBaseline(previous => editable(apply(previous ? Object.fromEntries(
+      EDITABLE.map((key, i) => [key, JSON.parse(previous)[i]])) : {})))
+    setSavedMsg('✓ Einstellungen gespeichert')
+    setTimeout(() => setSavedMsg(''), 2500)
+    return true
   }
+
+  const saveAll = () => saveSettings(Object.fromEntries(EDITABLE.map(key => [key, settings[key]])))
 
   const startFreshPosters = async () => {
     setShowFreshConfirm(false)
@@ -394,10 +495,22 @@ export default function Settings() {
     setSettings(s => ({ ...s, webhook: { ...s.webhook, token } }))
   }
 
+  const dirty = settings ? editable(settings) !== baseline : false
+  useEffect(() => {
+    if (!dirty) return undefined
+    const warn = event => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [dirty])
+
   if (!settings) return <div className="text-gray-400 text-center py-12">Loading settings…</div>
+
 
   return (
     <div className="max-w-2xl mx-auto space-y-8">
+
+      <Connections connections={settings.connections} info={settings.connections_info}
+        onChange={connections => setSettings(s => ({ ...s, connections }))} />
 
       <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
         <h2 className="text-white font-semibold">Media overlays</h2>
@@ -415,8 +528,6 @@ export default function Settings() {
             onChange={e => setSettings(s => ({ ...s, media_overlay: { ...s.media_overlay, label_size_percent: Number(e.target.value) } }))}
             className="block mt-1 w-24 px-2 py-1 bg-gray-900 border border-gray-600 rounded" />
         </label>
-        <button onClick={() => saveSettings({ media_overlay: settings.media_overlay })} disabled={saving}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm text-white">Save media overlays</button>
       </section>
 
       {/* ── Scheduled Processing ──────────────────────────────────── */}
@@ -443,14 +554,6 @@ export default function Settings() {
           libraries={libraries}
           onChange={val => setSettings(s => ({ ...s, cron_force: val }))}
         />
-
-        <div className="flex items-center gap-3 pt-2">
-          <button onClick={() => saveSettings({ cron_normal: settings.cron_normal, cron_force: settings.cron_force })} disabled={saving}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 rounded text-sm text-white font-semibold transition">
-            {saving ? 'Saving…' : 'Save Schedule'}
-          </button>
-          {savedMsg && <span className="text-xs text-green-400">{savedMsg}</span>}
-        </div>
       </section>
 
       <section className="bg-gray-800 border border-gray-700 rounded-xl p-6 space-y-4">
@@ -469,7 +572,6 @@ export default function Settings() {
           })} className={`rounded px-3 py-1 border text-xs ${selected ? 'bg-blue-700 border-blue-500' : 'border-gray-600'}`}>{selected ? '✓ ' : ''}{lib.name}</button>
         })}</div>
         <div className="flex gap-3 flex-wrap">
-          <button disabled={saving} onClick={() => saveSettings({ imdb_direct: settings.imdb_direct })} className="bg-gray-700 rounded px-4 py-2 text-sm">Einstellungen speichern</button>
           <button disabled={!settings.imdb_direct?.enabled || imdbSync?.is_running || saving} onClick={() => refreshImdb('ratings')} className="bg-violet-700 disabled:opacity-40 rounded px-4 py-2 text-sm">Nur Wertungen in Cache schreiben</button>
           <button disabled={!settings.imdb_direct?.enabled || imdbSync?.is_running || saving} onClick={() => refreshImdb('both')} className="bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm">Wertungen und Poster aktualisieren</button>
         </div>
@@ -514,8 +616,6 @@ export default function Settings() {
           </select>
         </label>
         <p className="text-xs text-gray-500">{{ adopt: 'Das neue Plex-Poster wird zum Original, dann wird das Overlay neu gerendert.', restore: 'Das gesicherte Original bleibt, das Overlay wird erneut hochgeladen.', report: 'Der Titel wird nur im Ergebnis gemeldet und nicht verändert.' }[settings.lost_overlay || 'adopt']}</p>
-        <button onClick={() => saveSettings({ kometa_conflicts: settings.kometa_conflicts, lost_overlay: settings.lost_overlay, kometa: settings.kometa })} disabled={saving}
-          className="bg-blue-600 disabled:opacity-40 rounded px-4 py-2 text-sm">Kometa-Einstellung speichern</button>
       </section>
 
       {/* ── Plex Webhook ──────────────────────────────────────────── */}
@@ -596,12 +696,6 @@ export default function Settings() {
             )}
           </div>
         )}
-
-        <button onClick={() => saveSettings({ webhook: settings.webhook })} disabled={saving}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 rounded text-sm text-white font-semibold transition">
-          {saving ? 'Saving…' : 'Save Webhook Settings'}
-        </button>
-        {savedMsg && <span className="text-xs text-green-400 ml-3">{savedMsg}</span>}
       </section>
 
       {/* ── Library Maintenance ───────────────────────────────────── */}
@@ -735,6 +829,20 @@ export default function Settings() {
           </WarningBox>
         </div>
       </section>
+
+      {/* One save for every setting above; actions (scans, resets) run on their own buttons */}
+      <div className="sticky bottom-0 z-30 -mx-4 sm:mx-0 bg-gray-900/95 border-t sm:border border-gray-700 sm:rounded-xl px-4 py-3 flex flex-wrap items-center gap-3 shadow-lg">
+        <span className={`text-sm mr-auto ${savedMsg.startsWith('✗') ? 'text-red-400' : savedMsg ? 'text-green-400' : dirty ? 'text-amber-300' : 'text-gray-500'}`} role="status">
+          {savedMsg || (dirty ? 'Ungespeicherte Änderungen' : 'Alle Änderungen gespeichert')}
+        </span>
+        {dirty && <button type="button" disabled={saving} onClick={() => {
+          setSettings(s => ({ ...s, ...Object.fromEntries(EDITABLE.map((key, i) => [key, JSON.parse(baseline)[i]])) }))
+        }} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded text-sm text-white">Verwerfen</button>}
+        <button type="button" onClick={saveAll} disabled={saving || !dirty}
+          className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-400 rounded text-sm text-white font-semibold transition">
+          {saving ? 'Speichere…' : 'Einstellungen speichern'}
+        </button>
+      </div>
 
       {/* Confirmation modals */}
       {showFreshConfirm && (

@@ -1,6 +1,6 @@
 """Status page: is everything Kometizarr depends on reachable and configured?"""
 
-import os
+import re
 import shutil
 import time
 from collections import deque
@@ -28,40 +28,48 @@ def _check(name, fn):
     try:
         state, detail = fn()
     except Exception as exc:
-        state, detail = 'error', str(exc)[:200]
+        # Request errors repeat the URL; keys must not show up on the status page
+        state, detail = 'error', re.sub(r'(?i)(api_?key|apikey|x-plex-token)=[^&\s\'"]+', r'\1=…', str(exc))[:200]
     return {'name': name, 'state': state, 'detail': detail,
             'ms': int((time.monotonic() - started) * 1000)}
 
 
-def _plex():
-    if not os.getenv('PLEX_URL') or not os.getenv('PLEX_TOKEN'):
-        return 'error', 'PLEX_URL oder PLEX_TOKEN fehlt'
-    server = config.plex_server()
+def _plex(url, token):
+    if not url or not token:
+        return 'error', 'Plex-Server oder Token fehlt (Settings → Verbindungen)'
+    server = config.plex_server(url, token)
     return 'ok', f'{server.friendlyName} · Version {server.version}'
 
 
-def _tmdb():
-    key = os.getenv('TMDB_API_KEY')
+def _tmdb(key):
     if not key:
-        return 'missing', 'Kein TMDB_API_KEY (Wertungen kommen dann nur aus Plex)'
+        return 'missing', 'Kein TMDB-Key (Wertungen kommen dann nur aus Plex)'
     response = requests.get('https://api.themoviedb.org/3/configuration', params={'api_key': key}, timeout=TIMEOUT)
     return ('ok', 'Schlüssel gültig') if response.ok else ('error', f'HTTP {response.status_code}')
 
 
-def _omdb():
-    key = os.getenv('OMDB_API_KEY')
+def _omdb(key):
     if not key:
         return 'missing', 'Optional, nicht gesetzt'
     data = requests.get('https://www.omdbapi.com/', params={'i': 'tt0111161', 'apikey': key}, timeout=TIMEOUT).json()
     return ('ok', 'Schlüssel gültig') if data.get('Response') == 'True' else ('error', data.get('Error', 'Unbekannt'))
 
 
-def _mdblist():
-    key = os.getenv('MDBLIST_API_KEY')
+def _mdblist(key):
     if not key:
         return 'missing', 'Optional, nicht gesetzt'
     data = requests.get('https://mdblist.com/api/', params={'apikey': key, 'i': 'tt0111161'}, timeout=TIMEOUT).json()
     return ('error', str(data.get('error'))) if data.get('error') else ('ok', 'Schlüssel gültig')
+
+
+def connection_checks(values):
+    """Check Plex and the API keys; ``values`` holds connection names, missing ones use the saved values."""
+    settings = config.load_settings()
+    value = lambda name: (values.get(name) or '').strip() or config.credential(name, settings)
+    return [_check('Plex', lambda: _plex(value('plex_url'), value('plex_token'))),
+            _check('TMDB', lambda: _tmdb(value('tmdb_api_key'))),
+            _check('OMDb', lambda: _omdb(value('omdb_api_key'))),
+            _check('MDBList', lambda: _mdblist(value('mdblist_api_key')))]
 
 
 def _imdb_dataset(settings):
@@ -99,12 +107,15 @@ def _mounts(settings):
     ]
 
 
+def invalidate():
+    """Saved connections changed: check again on the next status request."""
+    _cache['checks'] = None
+
+
 def external_checks(refresh=False):
     if refresh or _cache['checks'] is None or time.time() - _cache['at'] > CACHE_SECONDS:
         settings = config.load_settings()
-        _cache['checks'] = [_check('Plex', _plex), _check('TMDB', _tmdb), _check('OMDb', _omdb),
-                            _check('MDBList', _mdblist),
-                            _check('IMDb-Datensatz', lambda: _imdb_dataset(settings))]
+        _cache['checks'] = connection_checks({}) + [_check('IMDb-Datensatz', lambda: _imdb_dataset(settings))]
         _cache['at'] = time.time()
     return _cache['checks'], _cache['at']
 

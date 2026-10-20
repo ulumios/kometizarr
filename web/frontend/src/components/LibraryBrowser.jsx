@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
+import { kometaCount, kometaQuestion, startKometaReset } from './kometaReset'
 
-const saved = (() => { try { return JSON.parse(sessionStorage.getItem('kometizarr-browser') || '{}') } catch { return {} } })()
+// Read on every mount (not once per page load), so returning from a run reopens the same show or season
+const readSaved = () => { try { return JSON.parse(sessionStorage.getItem('kometizarr-browser') || '{}') } catch { return {} } }
 
 export default function LibraryBrowser({ onStartProcessing }) {
+  const [saved] = useState(readSaved)
   const [libraries, setLibraries] = useState([])
   const [library, setLibrary] = useState(saved.library || '')
   const [parent, setParent] = useState(saved.parent || null)
@@ -30,6 +33,8 @@ export default function LibraryBrowser({ onStartProcessing }) {
     try { return JSON.parse(sessionStorage.getItem('kometizarr-browser-job') || 'null') } catch { return null }
   })
   const [imdbJob, setImdbJob] = useState(null)
+  const [kometaAsk, setKometaAsk] = useState(null)  // {count} before an IMDb run on Kometa posters
+  const [kometaDone, setKometaDone] = useState(false)
 
   useEffect(() => {
     sessionStorage.setItem('kometizarr-browser', JSON.stringify({
@@ -134,25 +139,41 @@ export default function LibraryBrowser({ onStartProcessing }) {
       const job = { id: data.task_id, keys: [...selected] }
       sessionStorage.setItem('kometizarr-browser-job', JSON.stringify(job))
       setPendingJob(job)
+      setSelected([])
       onStartProcessing()
     } catch (e) { setError(e.message) }
     finally { setBusy(false) }
   }
 
-  const launchImdb = async mode => {
+  // Kometa posters would be skipped by the IMDb run: ask first whether to take them over
+  const askImdb = async () => {
     if (!selected.length || busy || imdbJob?.is_running) return
+    try {
+      const check = await fetch(`/api/library/${encodeURIComponent(library)}/kometa-check`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rating_keys: selected }),
+      }).then(r => r.json())
+      if (check.count > 0) { setKometaAsk({ count: check.count }); return }
+    } catch { /* without the check the run still reports Kometa skips afterwards */ }
+    launchImdb('both')
+  }
+
+  const launchImdb = async (mode, resetKometa = false) => {
+    if (!selected.length || busy || imdbJob?.is_running) return
+    setKometaAsk(null)
+    setKometaDone(false)
     setBusy(true)
     setError('')
     try {
       const response = await fetch(`/api/library/${encodeURIComponent(library)}/selected-imdb`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rating_keys: selected, mode }),
+        body: JSON.stringify({ rating_keys: selected, mode, reset_kometa: resetKometa }),
       })
       const data = await response.json()
       if (!response.ok) throw Error(data.detail || 'IMDb-Lauf konnte nicht gestartet werden')
       const job = { id: data.task_id, keys: [...selected] }
       sessionStorage.setItem('kometizarr-browser-job', JSON.stringify(job))
       setPendingJob(job)
+      setSelected([])
       setImdbJob({ is_running: false, phase: `Aufgabe #${data.task_id} wartet`, library, logs: [] })
     } catch (e) { setError(e.message) }
     finally { setBusy(false) }
@@ -204,7 +225,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 flex flex-wrap items-center gap-3">
       <span className="text-sm mr-auto">{selected.length} ausgewählt</span>
       <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launch(false)} className="px-4 py-2 rounded bg-blue-600 disabled:opacity-40">Nur Overlay</button>
-      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={() => launchImdb('both')} className="px-4 py-2 rounded bg-emerald-700 disabled:opacity-40">Overlay mit aktueller IMDb</button>
+      <button disabled={!selected.length || busy || imdbJob?.is_running} onClick={askImdb} className="px-4 py-2 rounded bg-emerald-700 disabled:opacity-40">Overlay mit aktueller IMDb</button>
       <button disabled={!selected.length || busy} onClick={() => setConfirmReset(true)} className="px-4 py-2 rounded bg-orange-700 disabled:opacity-40">Plex-Poster zurücksetzen</button>
     </div>
     {imdbJob && <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-3">
@@ -212,6 +233,14 @@ export default function LibraryBrowser({ onStartProcessing }) {
       <p className="text-xs text-gray-400">{imdbJob.scanned || 0} Einträge · {imdbJob.matched || 0} IMDb-Titel · {imdbJob.changed || 0} geänderte Werte · {imdbJob.rendered || 0} Poster gerendert</p>
       {imdbJob.is_running && <div role="progressbar" aria-valuenow={imdbJob.percent || 0} aria-valuemin="0" aria-valuemax="100" className="bg-gray-900 rounded h-4 overflow-hidden"><div className="bg-blue-600 h-full" style={{ width: `${imdbJob.percent || 0}%` }} /></div>}
       {imdbJob.error && <p role="alert" className="text-red-300 text-sm">{imdbJob.error}</p>}
+      {!imdbJob.is_running && kometaCount(imdbJob) > 0 && imdbJob.task_id && !kometaDone && <div className="bg-amber-900/30 border border-amber-700/60 rounded p-3 space-y-2">
+        <p className="text-sm text-amber-200">{kometaQuestion(kometaCount(imdbJob))}</p>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={async () => { try { const id = await startKometaReset(imdbJob.task_id); setKometaDone(true); const job = { id, keys: Object.values(imdbJob.kometa_keys).flat() }; sessionStorage.setItem('kometizarr-browser-job', JSON.stringify(job)); setPendingJob(job); onStartProcessing() } catch (e) { setError(e.message) } }}
+            className="px-3 py-1.5 rounded bg-amber-600 text-sm">Zurücksetzen und overlayen</button>
+          <button onClick={() => setKometaDone(true)} className="px-3 py-1.5 rounded bg-gray-700 text-sm">Nein</button>
+        </div>
+      </div>}
       <div className="max-h-80 overflow-auto space-y-1 text-sm" role="log">{(imdbJob.logs || []).map(row => <div key={row.key} className="flex flex-wrap gap-x-3 gap-y-1 border-b border-gray-700 py-1">
         <span className="flex-1 min-w-44">{row.type === 'episode' ? 'Episode · ' : row.type === 'show' ? 'Serie · ' : 'Film · '}{row.title}</span>
         <span className="text-gray-300">{row.imdb_id || 'Keine IMDb-ID'}: {row.rating == null ? 'keine Wertung' : row.rating.toFixed(1)}</span>
@@ -219,6 +248,15 @@ export default function LibraryBrowser({ onStartProcessing }) {
         {row.render && <span className="text-blue-300">Poster: {row.render}</span>}
       </div>)}</div>
     </div>}
+    {kometaAsk && <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"><div className="bg-gray-800 border border-amber-600 rounded-xl p-6 max-w-md space-y-4">
+      <h3 className="text-lg font-semibold">Kometa-Overlay erkannt</h3>
+      <p className="text-sm text-gray-300">{kometaAsk.count} der ausgewählten {kometaAsk.count === 1 ? 'Einträge hat' : 'Einträge haben'} ein Kometa-Overlay und {kometaAsk.count === 1 ? 'würde' : 'würden'} übersprungen. Soll das Kometa-Overlay zurückgesetzt werden? Verwendet wird Kometas gespeichertes Original, sonst das Plex-Agent-Poster.</p>
+      <div className="flex flex-wrap gap-3">
+        <button disabled={busy} onClick={() => launchImdb('both', true)} className="px-4 py-2 bg-amber-600 rounded">Zurücksetzen und overlayen</button>
+        <button disabled={busy} onClick={() => launchImdb('both', false)} className="px-4 py-2 bg-gray-700 rounded">Kometa-Titel überspringen</button>
+        <button onClick={() => setKometaAsk(null)} className="px-4 py-2 bg-gray-900 border border-gray-600 rounded">Abbrechen</button>
+      </div>
+    </div></div>}
     {confirmReset && <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"><div className="bg-gray-800 border border-gray-600 rounded-xl p-6 max-w-md space-y-4">
       <h3 className="text-lg font-semibold">Plex-Poster zurücksetzen?</h3>
       <p className="text-sm text-gray-300">Für die Auswahl wird das erste verfügbare Poster ohne Upload aus Plex gewählt. Einträge ohne solches Poster werden übersprungen.</p>

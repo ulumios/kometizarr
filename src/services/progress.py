@@ -27,6 +27,7 @@ class RunProgress:
         self.current = None
         self.results = {}
         self.failed_keys = []        # for "retry failed"; survives nested item loops
+        self.kometa_keys = {}        # library -> keys skipped for Kometa, offered for a reset
         self.error = None
         self.percent = None          # explicit percentage for phases without items
         self.extra = {}              # task specific numbers (IMDb: scanned, matched, …)
@@ -57,6 +58,11 @@ class RunProgress:
         if key is not None and reason is not None:
             self.results[str(key)] = reason
 
+    def kometa_skipped(self, library, key):
+        keys = self.kometa_keys.setdefault(library, [])
+        if len(keys) < MAX_FAILED_KEYS and str(key) not in keys:
+            keys.append(str(key))
+
     def finish(self, error=None):
         self.error = error or self.error
         self.running = False
@@ -78,7 +84,8 @@ class RunProgress:
                 'percent': self.computed_percent(), 'error': self.error,
                 'stop_requested': self.stop_requested, 'started_at': self.started_at,
                 'extra': dict(self.extra), 'results': dict(self.results),
-                'failed_keys': list(self.failed_keys)}
+                'failed_keys': list(self.failed_keys),
+                'kometa_keys': {library: list(keys) for library, keys in self.kometa_keys.items()}}
 
     # ── Views in the shape the existing UI components read ────────────────────
 
@@ -130,6 +137,7 @@ class RunProgress:
                    else snap['percent'])
         return {**base, **snap['extra'], 'is_running': snap['running'], 'phase': snap['phase'],
                 'error': snap['error'], 'percent': percent, 'library': snap['library'],
+                'task_id': snap['task_id'], 'kometa_keys': snap['kometa_keys'],
                 'rendered': snap['extra'].get('rendered', 0) + (snap['success'] if rendering and snap['running'] else 0),
                 'failed': snap['extra'].get('failed', 0) + (snap['failed'] if rendering and snap['running'] else 0)}
 
@@ -163,7 +171,7 @@ async def publish(force=False):
         await asyncio.to_thread(
             tasks.with_tasks, 'update_progress', progress.task_id,
             {**{key: snap[key] for key in ('done', 'total', 'success', 'failed', 'skipped',
-                                           'current', 'phase', 'percent', 'failed_keys')},
+                                           'current', 'phase', 'percent', 'failed_keys', 'kometa_keys')},
              'library': snap['library'],
              'extra': {key: value for key, value in snap['extra'].items() if key != 'logs'}},
             progress.extra.get('logs') if progress.kind in IMDB_KINDS else (progress.results or None))

@@ -13,7 +13,7 @@ logger = logging.getLogger('kometizarr')
 scheduler = AsyncIOScheduler()
 
 
-def _add_cron_job(job_id: str, schedule: str, libraries: list, force: bool):
+def _add_cron_job(job_id: str, schedule: str, libraries: list, force: bool, episodes: bool = False):
     parts = schedule.split()
     if len(parts) != 5:
         return
@@ -24,12 +24,12 @@ def _add_cron_job(job_id: str, schedule: str, libraries: list, force: bool):
     scheduler.add_job(
         cron_run_libraries,
         trigger=trigger,
-        args=[libraries, force],
+        args=[libraries, force, episodes],
         id=job_id,
         replace_existing=True,
     )
     label = ", ".join(libraries) if libraries else "all"
-    logger.info(f"Cron [{job_id}] scheduled: {schedule} for [{label}] (force={force})")
+    logger.info(f"Cron [{job_id}] scheduled: {schedule} for [{label}] (force={force}, episodes={episodes})")
 
 
 def reschedule(settings: dict):
@@ -39,7 +39,8 @@ def reschedule(settings: dict):
         cron = settings.get(key, {})
         if cron.get("enabled") and cron.get("schedule"):
             try:
-                _add_cron_job(key, cron["schedule"], cron.get("libraries", []), force)
+                _add_cron_job(key, cron["schedule"], cron.get("libraries", []), force,
+                              bool(cron.get("include_episodes")))
             except Exception as e:
                 logger.error(f"Failed to schedule {key}: {e}")
     imdb = settings.get('imdb_direct') or {}
@@ -55,7 +56,7 @@ async def cron_imdb_sync():
     await tasks.enqueue('imdb', {'mode': 'both' if config.load_settings()['imdb_direct'].get('auto_render') else 'ratings'})
 
 
-async def run_libraries_sequentially(libraries: list, force: bool):
+async def run_libraries_sequentially(libraries: list, force: bool, episodes: bool = False):
     """Fetch all Plex library names if list is empty, then process each sequentially."""
     if not libraries:
         try:
@@ -68,12 +69,14 @@ async def run_libraries_sequentially(libraries: list, force: bool):
     for lib_name in libraries:
         logger.info(f"Cron ({label}): processing {lib_name}")
         # Overlay options are taken from the saved settings when the task runs.
-        await tasks.enqueue('process', ProcessRequest(library_name=lib_name, force=force).model_dump())
+        # Episodes only matter for show libraries; the run ignores the flag elsewhere.
+        await tasks.enqueue('process', ProcessRequest(library_name=lib_name, force=force,
+                                                      include_episodes=episodes).model_dump())
 
 
-async def cron_run_libraries(libraries: list, force: bool = False):
+async def cron_run_libraries(libraries: list, force: bool = False, episodes: bool = False):
     """Persist scheduled work before execution, even when another job is active."""
-    await run_libraries_sequentially(libraries, force)
+    await run_libraries_sequentially(libraries, force, episodes)
 
 
 def next_runs():

@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import os
 import shutil
 
 from src.services import config, conflicts, library_index, overlay, tasks
@@ -91,7 +90,7 @@ def reset_to_plex_poster(library_name, item, server, backup_manager):
             return 'skipped'
         # Selecting artwork in Plex happens first; replacing the backup
         # happens only after the new image is fetched and validated.
-        capture_plex(backup_manager, library_name, item, server, os.getenv('PLEX_TOKEN'))
+        capture_plex(backup_manager, library_name, item, server, config.credential('plex_token'))
         old_episode = backup_manager.backup_dir / library_name / 'episodes' / str(item.ratingKey)
         if item.type == 'episode' and old_episode.is_dir():
             shutil.rmtree(old_episode)

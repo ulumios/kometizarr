@@ -13,21 +13,62 @@ SETTINGS_PATH = Path(os.getenv('KOMETIZARR_SETTINGS', '/app/kometizarr/data/sett
 OVERLAY_OPTIONS = ('badge_style', 'badge_positions', 'rating_sources', 'media_overlay')
 
 
-def plex_server():
+# Connection settings: entered in the web UI (settings.json) or, as before, environment variables
+CONNECTIONS = {'plex_url': 'PLEX_URL', 'plex_token': 'PLEX_TOKEN', 'tmdb_api_key': 'TMDB_API_KEY',
+               'omdb_api_key': 'OMDB_API_KEY', 'mdblist_api_key': 'MDBLIST_API_KEY'}
+SECRETS = {'plex_token', 'tmdb_api_key', 'omdb_api_key', 'mdblist_api_key'}
+
+
+def credential(name, settings=None):
+    """A value saved in the web UI wins over the environment variable."""
+    stored = ((settings if settings is not None else load_settings()).get('connections') or {}).get(name)
+    return (stored or '').strip() or os.getenv(CONNECTIONS[name]) or None
+
+
+def connections_view(settings):
+    """What the UI may see: URLs in full, secrets only as set/unset with their last characters."""
+    stored = settings.get('connections') or {}
+    values, info = {}, {}
+    for name, env in CONNECTIONS.items():
+        own, from_env = (stored.get(name) or '').strip(), os.getenv(env) or ''
+        effective = own or from_env
+        values[name] = None if name in SECRETS else own
+        info[name] = {'source': 'settings' if own else 'env' if from_env else None, 'env': env,
+                      'hint': (f'…{effective[-4:]}' if len(effective) > 8 else 'gesetzt') if name in SECRETS and effective
+                      else effective or None}
+    return values, info
+
+
+def merge_connections(stored, incoming):
+    """None keeps the saved value, an empty string removes it (environment applies again)."""
+    merged = dict(stored or {})
+    for name, value in (incoming or {}).items():
+        if name not in CONNECTIONS or value is None:
+            continue
+        if str(value).strip():
+            merged[name] = str(value).strip()
+        else:
+            merged.pop(name, None)
+    return merged
+
+
+def plex_server(url=None, token=None):
     from plexapi.server import PlexServer
-    return PlexServer(os.getenv('PLEX_URL'), os.getenv('PLEX_TOKEN'))
+    settings = load_settings()
+    return PlexServer(url or credential('plex_url', settings), token or credential('plex_token', settings))
 
 
 def create_manager(library_name, rating_sources=None, badge_style=None, media_overlay=None,
                    api_cache=None):
     from src.rating_overlay.plex_poster_manager import PlexPosterManager
+    settings = load_settings()
     return PlexPosterManager(
-        plex_url=os.getenv('PLEX_URL'),
-        plex_token=os.getenv('PLEX_TOKEN'),
+        plex_url=credential('plex_url', settings),
+        plex_token=credential('plex_token', settings),
         library_name=library_name,
-        tmdb_api_key=os.getenv('TMDB_API_KEY'),
-        omdb_api_key=os.getenv('OMDB_API_KEY'),
-        mdblist_api_key=os.getenv('MDBLIST_API_KEY'),
+        tmdb_api_key=credential('tmdb_api_key', settings),
+        omdb_api_key=credential('omdb_api_key', settings),
+        mdblist_api_key=credential('mdblist_api_key', settings),
         backup_dir=str(BACKUP_DIR),
         dry_run=False,
         rating_sources=rating_sources,

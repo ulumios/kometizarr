@@ -125,6 +125,8 @@ services:
       - TMDB_API_KEY=YOUR_TMDB_KEY
       - OMDB_API_KEY=YOUR_OMDB_KEY  # Optional
       - MDBLIST_API_KEY=YOUR_MDBLIST_KEY
+      # Plex and the API keys can also be entered in the web UI (Settings → Verbindungen);
+      # values saved there win over these variables.
     restart: unless-stopped
     networks:
       - kometizarr

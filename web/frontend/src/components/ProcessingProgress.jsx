@@ -1,4 +1,24 @@
 import { useState, useEffect, useRef } from 'react'
+import { kometaCount, kometaQuestion, startKometaReset } from './kometaReset'
+
+// After a run: offer to take over the items skipped because Kometa overlaid them
+function KometaResetPrompt({ task, onStarted }) {
+  const [state, setState] = useState('')
+  const count = kometaCount(task)
+  if (!count || !task?.task_id || state === 'no') return null
+  const start = async () => {
+    setState('busy')
+    try { await startKometaReset(task.task_id); onStarted() } catch (e) { setState(e.message) }
+  }
+  return <div className="bg-amber-900/30 border border-amber-700/60 rounded-lg p-4 my-4 text-left space-y-3">
+    <p className="text-sm text-amber-200">{kometaQuestion(count)}</p>
+    <div className="flex flex-wrap gap-3">
+      <button disabled={state === 'busy'} onClick={start} className="bg-amber-600 hover:bg-amber-700 disabled:opacity-40 rounded px-4 py-2 text-sm text-white">Zurücksetzen und overlayen</button>
+      <button onClick={() => setState('no')} className="bg-gray-700 hover:bg-gray-600 rounded px-4 py-2 text-sm text-white">Nein, so lassen</button>
+    </div>
+    {state && !['busy', 'no'].includes(state) && <p role="alert" className="text-red-300 text-sm">{state}</p>}
+  </div>
+}
 
 function ProcessingProgress({ onComplete, progressData, setProgressData, compact = false }) {
   const [ws, setWs] = useState(null)
@@ -247,9 +267,10 @@ function ProcessingProgress({ onComplete, progressData, setProgressData, compact
               ? `Successfully restored ${successCount} out of ${progressData.total} items`
               : `Successfully processed ${successCount} items (${progressData.failed || 0} failed, ${progressData.skipped || 0} skipped)`}
           </div>
+          <KometaResetPrompt task={progressData.task} onStarted={() => setProgressData(null)} />
           <button onClick={onComplete}
             className="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded text-sm">
-            Back to Dashboard
+            ← Zurück
           </button>
         </div>
       )}

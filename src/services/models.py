@@ -58,6 +58,7 @@ class ConflictAction(BaseModel):
 class SelectedImdbRequest(BaseModel):
     rating_keys: List[str]
     mode: str  # 'ratings' or 'both'
+    reset_kometa: bool = False  # confirmed in the UI: take over Kometa posters first
 
 
 class ImdbSyncRequest(BaseModel):

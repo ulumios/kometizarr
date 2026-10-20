@@ -52,6 +52,12 @@ class OverlayFilterTest(unittest.TestCase):
         self.index.set_flags('Filme', 1, has_overlay=False)
         self.assertEqual(self.keys('Filme'), ['1'])
 
+    def test_kometa_check_for_selection(self):
+        self.assertEqual(sorted(self.index.kometa_keys('Filme', ['1', '2', '3', '4'])), ['3', '4'])
+        # a selected season stands for its episodes
+        self.assertEqual(self.index.kometa_keys('Serien', ['21']), ['23'])
+        self.assertEqual(self.index.kometa_keys('Serien', []), [])
+
 
 class ScanFlagsTest(unittest.TestCase):
     def test_scan_reads_overlay_files_and_label_search(self):

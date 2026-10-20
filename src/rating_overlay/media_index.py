@@ -254,5 +254,20 @@ class MediaIndex:
             self.db.execute(f'UPDATE media SET {", ".join(f"{name}=?" for name in updates)} WHERE library=? AND key=?',
                             (*updates.values(), library, str(rating_key)))
 
+    def kometa_keys(self, library, keys):
+        """Selected items (episodes of selected seasons included) that carry a Kometa overlay
+        and no Kometizarr overlay, i.e. the ones a run would skip for Kometa."""
+        keys = [str(key) for key in keys]
+        if not keys:
+            return []
+        marks = ','.join('?' * len(keys))
+        rows = self.db.execute(
+            f"""SELECT key FROM media WHERE library=? AND (key IN ({marks})
+                    OR (type='episode' AND parent_key IN ({marks})))
+                AND coalesce(has_overlay,0)=0
+                AND (kometa_label=1 OR key IN (SELECT key FROM conflicts WHERE library=?))""",
+            (library, *keys, *keys, library))
+        return [row[0] for row in rows]
+
     def flags_ready(self, library):
         return bool(self.snapshot(library, 'overlay_flags')[0])

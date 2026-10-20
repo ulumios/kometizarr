@@ -6,7 +6,7 @@ import shutil
 
 from fastapi import APIRouter
 
-from src.services import config, schedule, tasks
+from src.services import config, health, schedule, tasks
 from src.services.models import FreshPostersRequest, ProcessRequest
 from src.services.progress import progress
 
@@ -21,17 +21,30 @@ async def get_settings():
     settings = config.load_settings()
     for key, next_run in schedule.next_runs().items():
         settings.setdefault(key, {})["next_run"] = next_run
+    settings['connections'], settings['connections_info'] = config.connections_view(settings)
     return settings
 
 
 @router.put("/api/settings")
 async def update_settings(settings: dict):
+    stored = config.load_settings()
+    settings.pop('connections_info', None)
+    # Secrets come back as null from GET; only typed values replace the saved ones
+    settings['connections'] = config.merge_connections(stored.get('connections'), settings.get('connections'))
     config.save_settings(settings)
     schedule.reschedule(settings)
+    health.invalidate()
     result = {"status": "saved"}
     for key, next_run in schedule.next_runs().items():
         result[f"{key}_next_run"] = next_run
+    result['connections'], result['connections_info'] = config.connections_view(settings)
     return result
+
+
+@router.post("/api/connections/test")
+async def test_connections(values: dict):
+    """Check Plex and the API keys with the values typed in the form (not saved yet)."""
+    return {'checks': await asyncio.to_thread(health.connection_checks, values or {})}
 
 
 @router.post("/api/fetch-fresh-posters")

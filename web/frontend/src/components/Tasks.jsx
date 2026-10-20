@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { kometaCount, kometaQuestion } from './kometaReset'
 
 const names = {
   process: 'Overlays anwenden', batch: 'Bibliotheken bearbeiten', restore: 'Plex-Poster wiederherstellen',
@@ -96,6 +97,10 @@ export default function Tasks() {
           {task.status !== 'running' && task.status !== 'queued' && task.progress?.failed_keys?.length > 0 && task.kind !== 'plan' &&
             <button onClick={() => follow(task, 'retry')} className="bg-orange-600 hover:bg-orange-700 rounded px-3 py-1 text-xs">
               {task.progress.failed_keys.length} fehlgeschlagene wiederholen</button>}
+          {task.status !== 'running' && task.status !== 'queued' && kometaCount(task.progress) > 0 &&
+            <button onClick={() => window.confirm(kometaQuestion(kometaCount(task.progress))) && follow(task, 'kometa-reset')}
+              className="bg-amber-600 hover:bg-amber-700 rounded px-3 py-1 text-xs">
+              {kometaCount(task.progress)} Kometa-Titel zurücksetzen und overlayen</button>}
         </div>
       </div>
       <div className="text-gray-400">{statusText[task.status] || task.status}{task.status === 'queued' && task.run_after * 1000 > Date.now()

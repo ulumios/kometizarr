@@ -196,5 +196,23 @@ class ForceTakesOverKometaTest(unittest.TestCase):
         self.assertEqual(plan_item(Facts(kometa_untagged=True, has_overlay=True, has_original=True), Options()).steps, [])
 
 
+class ConfirmedKometaResetTest(unittest.TestCase):
+    def test_imdb_overlay_resets_kometa_posters_when_confirmed(self):
+        options = Options(operation='imdb_overlay', force=True, reset_kometa=True)
+        labelled = plan_item(Facts(kometa_label=True, kometa_original=True), options)
+        self.assertEqual((labelled.skip, labelled.steps, labelled.origin), (None, ['use_kometa_original'], 'kometa'))
+        # a Kometa poster that was captured as original is replaced, not rejected
+        captured = plan_item(Facts(kometa_label=True, has_original=True, origin='current_with_label'), options)
+        self.assertEqual((captured.skip, captured.steps), (None, ['reset_agent']))
+        # a remembered conflict without label is reset too
+        self.assertEqual(plan_item(Facts(recorded_conflict=True), options).steps, ['reset_agent'])
+
+    def test_normal_run_with_confirmed_reset(self):
+        plan = plan_item(Facts(recorded_conflict=True), Options(reset_kometa=True))
+        self.assertEqual(plan.steps, ['reset_agent'])
+        # without confirmation nothing changes
+        self.assertEqual(plan_item(Facts(kometa_label=True), Options(operation='imdb_overlay')).skip[0], 'skipped')
+
+
 if __name__ == '__main__':
     unittest.main()

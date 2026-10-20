@@ -71,5 +71,30 @@ class RetryTest(unittest.TestCase):
             self.assertEqual(client.post('/api/tasks/999/retry').status_code, 404)
 
 
+    def test_kometa_reset_endpoint_queues_skipped_items_with_reset(self):
+        from web.backend.main import app
+        with tempfile.TemporaryDirectory() as folder, \
+             patch('src.rating_overlay.task_queue.TaskQueue', side_effect=lambda: TaskQueue(Path(folder) / 't.db')):
+            first = tasks.with_tasks('add', 'selected_imdb', {'library': 'Movies', 'request': {}})
+            tasks.with_tasks('claim')
+            tasks.with_tasks('update_progress', first, {'kometa_keys': {'Movies': ['4', '5']}})
+            tasks.with_tasks('finish', first, None)
+            client = TestClient(app)
+            response = client.post(f'/api/tasks/{first}/kometa-reset')
+            self.assertEqual((response.status_code, response.json()['items']), (200, 2))
+            payload = tasks.with_tasks('fetch', response.json()['task_id'])['payload']
+            self.assertEqual((payload['library_name'], payload['rating_keys'], payload['reset_kometa'],
+                              payload['operation']), ('Movies', ['4', '5'], True, 'imdb_overlay'))
+            empty = tasks.with_tasks('add', 'process', {'library_name': 'Movies'})
+            self.assertEqual(client.post(f'/api/tasks/{empty}/kometa-reset').status_code, 400)
+
+    def test_progress_remembers_kometa_skips_per_library(self):
+        progress.reset(task_id=1, kind='process')
+        progress.kometa_skipped('Filme', 3)
+        progress.kometa_skipped('Filme', 3)
+        progress.kometa_skipped('Serien', 8)
+        self.assertEqual(progress.snapshot()['kometa_keys'], {'Filme': ['3'], 'Serien': ['8']})
+        progress.reset()
+
 if __name__ == '__main__':
     unittest.main()

@@ -32,6 +32,23 @@ class HealthTest(unittest.TestCase):
         self.assertEqual(states['Speicherplatz /backups'], 'ok')
         self.assertEqual(data['queue']['queued'], 0)
 
+    def test_errors_hide_keys(self):
+        def fail():
+            raise ConnectionError("url: /3/configuration?api_key=topsecret&x=1 X-Plex-Token=abc")
+        detail = health._check('TMDB', fail)['detail']
+        self.assertNotIn('topsecret', detail)
+        self.assertNotIn('abc', detail)
+
+    def test_connection_test_prefers_typed_values(self):
+        with patch.object(config, 'load_settings', return_value={'connections': {'tmdb_api_key': 'saved'}}), \
+             patch.object(health, '_tmdb', return_value=('ok', '')) as tmdb, \
+             patch.object(health, '_plex', return_value=('ok', '')), \
+             patch.object(health, '_omdb', return_value=('ok', '')), \
+             patch.object(health, '_mdblist', return_value=('ok', '')):
+            health.connection_checks({'tmdb_api_key': 'typed'})
+            health.connection_checks({'tmdb_api_key': None})
+        self.assertEqual([call.args[0] for call in tmdb.call_args_list], ['typed', 'saved'])
+
     def test_webhook_calls_are_listed(self):
         from web.backend.main import app
         health.webhook_events.clear()

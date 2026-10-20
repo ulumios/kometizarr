@@ -1,7 +1,6 @@
 """Collection management endpoints (decade, studio, keyword collections)."""
 
 import logging
-import os
 from typing import Dict, List
 
 from fastapi import APIRouter
@@ -94,8 +93,8 @@ async def create_decade_collections(request: DecadeCollectionRequest):
     """Create decade collections"""
     try:
         manager = CollectionManager(
-            plex_url=os.getenv('PLEX_URL'),
-            plex_token=os.getenv('PLEX_TOKEN'),
+            plex_url=config.credential('plex_url'),
+            plex_token=config.credential('plex_token'),
             library_name=request.library_name,
             dry_run=False
         )
@@ -116,8 +115,8 @@ async def create_studio_collections(request: StudioCollectionRequest):
     """Create studio collections"""
     try:
         manager = CollectionManager(
-            plex_url=os.getenv('PLEX_URL'),
-            plex_token=os.getenv('PLEX_TOKEN'),
+            plex_url=config.credential('plex_url'),
+            plex_token=config.credential('plex_token'),
             library_name=request.library_name,
             dry_run=False
         )
@@ -138,10 +137,10 @@ async def create_keyword_collections(request: KeywordCollectionRequest):
     """Create keyword collections"""
     try:
         manager = CollectionManager(
-            plex_url=os.getenv('PLEX_URL'),
-            plex_token=os.getenv('PLEX_TOKEN'),
+            plex_url=config.credential('plex_url'),
+            plex_token=config.credential('plex_token'),
             library_name=request.library_name,
-            tmdb_api_key=os.getenv('TMDB_API_KEY'),
+            tmdb_api_key=config.credential('tmdb_api_key'),
             dry_run=False
         )
 

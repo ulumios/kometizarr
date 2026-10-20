@@ -12,7 +12,13 @@ function App() {
   const [processing, setProcessing] = useState(false)
   const [progressData, setProgressData] = useState(null)
   const [showProgressBanner, setShowProgressBanner] = useState(false)
-  const [activeTab, setActiveTab] = useState('overlays')
+  // Remembered per browser tab, so "Zurück" after a run and a reload return to the same view
+  const [activeTab, setActiveTab] = useState(() => {
+    try { return sessionStorage.getItem('kometizarr-tab') || 'overlays' } catch { return 'overlays' }
+  })
+  useEffect(() => {
+    try { sessionStorage.setItem('kometizarr-tab', activeTab) } catch { /* private mode */ }
+  }, [activeTab])
   const [selectedLibrary, setSelectedLibrary] = useState(null)
   const [checkingStatus, setCheckingStatus] = useState(true)
 

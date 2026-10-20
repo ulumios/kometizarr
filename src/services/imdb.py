@@ -94,7 +94,7 @@ async def run_selected(library_name, request):
             progress.phase = 'Poster rendern'
             await overlay.run_overlay(ProcessRequest(
                 library_name=library_name, rating_keys=request.rating_keys, force=True,
-                operation='imdb_overlay',
+                operation='imdb_overlay', reset_kometa=request.reset_kometa,
                 use_imdb_cache=True, record_results=True,
                 rating_sources={**(config.design_for(settings, library_name)['rating_sources']
                                    or config.DEFAULT_RATING_SOURCES), 'imdb': True}))

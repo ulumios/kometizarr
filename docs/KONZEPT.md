@@ -184,3 +184,16 @@ Abweichungen vom Plan:
 - Nicht gegen einen echten Plex-Server getestet: Erkennung verlorener Overlays, Löschen alter
   Uploads im Metadatenordner, Sonarr/Radarr-Zuordnung. Diese Wege sind mit Tests und
   Sicherungen (Trockenlauf, Doppelprüfung, Plausibilitätsgrenzen) abgedeckt.
+
+## Nachträge
+
+- **Verbindungen im Webinterface**: Plex-URL, Plex-Token und die API-Keys (TMDB, OMDb, MDBList)
+  lassen sich unter Settings → Verbindungen eintragen und testen. Gespeicherte Werte stehen in
+  `settings.json` (`connections`) und gelten vor den Umgebungsvariablen. Schlüssel werden nie an
+  das UI zurückgegeben (nur „gesetzt …1234“), Fehlermeldungen blenden sie aus.
+- **Ein Speichern-Knopf**: Alle Einstellungen werden über die Leiste am Seitenende gespeichert;
+  Aktionen (Scans, Zurücksetzen) haben weiter eigene Knöpfe.
+- **Kometa-Nachfrage**: Läufe merken sich, welche Titel wegen Kometa übersprungen wurden
+  (`kometa_keys`). Fortschrittsansicht, Aufgabenliste und Bibliotheksansicht bieten an, diese mit
+  `reset_kometa` erneut zu starten; der IMDb-Lauf aus der Bibliotheksansicht fragt vorher.
+- **Geplante Läufe** können Episoden mit bearbeiten (`include_episodes`).
