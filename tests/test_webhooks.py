@@ -49,7 +49,7 @@ class ArrTaskTest(unittest.TestCase):
     def test_renders_found_title_and_episodes(self):
         task = {'id': 1, 'kind': 'arr', 'payload': {'target': arr.parse(SONARR), 'attempt': 1}}
         with patch.object(config, 'load_settings', return_value={'webhook': {}}), \
-             patch.object(arr, 'resolve', return_value=('Serien', ['10', '12'])), \
+             patch.object(arr, 'resolve', return_value=('Serien', ['10', '12'], [])), \
              patch.object(overlay, 'run_overlay', new_callable=AsyncMock) as render:
             progress.reset()
             asyncio.run(arr.arr_task(task))
@@ -66,8 +66,50 @@ class ArrTaskTest(unittest.TestCase):
         library = SimpleNamespace(type='show', title='Serien', getGuid=get_guid)
         server = SimpleNamespace(library=SimpleNamespace(sections=lambda: [library]))
         with patch.object(config, 'plex_server', return_value=server):
-            self.assertEqual(arr.resolve(arr.parse(SONARR), []), ('Serien', ['10', '12']))
+            self.assertEqual(arr.resolve(arr.parse(SONARR), []), ('Serien', ['10', '12'], []))
             self.assertIsNone(arr.resolve(arr.parse(RADARR), []))  # no movie library
+
+
+def plex_episode(key, file):
+    return SimpleNamespace(ratingKey=key, media=[SimpleNamespace(parts=[SimpleNamespace(file=file)])])
+
+
+UPGRADE = {**SONARR, 'isUpgrade': True,
+           'episodeFile': {'relativePath': 'Season 01/Lost - S01E02 - Title [Bluray-1080p].mkv'}}
+
+
+class UpgradeTest(unittest.TestCase):
+    def server(self, file):
+        show = SimpleNamespace(ratingKey=10, episode=lambda season, episode: plex_episode(12, file))
+        library = SimpleNamespace(type='show', title='Serien', getGuid=lambda guid: show)
+        return SimpleNamespace(library=SimpleNamespace(sections=lambda: [library]))
+
+    def test_reads_imported_file_names(self):
+        target = arr.parse(UPGRADE)
+        self.assertEqual((target['files'], target['upgrade']), (['Lost - S01E02 - Title [Bluray-1080p].mkv'], True))
+        radarr = arr.parse({**RADARR, 'movieFile': {'path': 'C:\\Movies\\Heat (1995)\\Heat.mkv'}})
+        self.assertEqual(radarr['files'], ['Heat.mkv'])
+
+    def test_waits_while_plex_shows_the_old_file(self):
+        old = self.server('/tv/Lost/Season 01/Lost - S01E02 - Title [WEBDL-720p].mkv')
+        with patch.object(config, 'plex_server', return_value=old):
+            self.assertEqual(arr.resolve(arr.parse(UPGRADE), []), ('Serien', ['10', '12'], ['/tv/Lost/Season 01']))
+        new = self.server('/tv/Lost/Season 01/Lost - S01E02 - Title [Bluray-1080p].mkv')
+        with patch.object(config, 'plex_server', return_value=new):
+            self.assertEqual(arr.resolve(arr.parse(UPGRADE), []), ('Serien', ['10', '12'], []))
+
+    def test_scans_the_folder_and_retries(self):
+        task = {'id': 1, 'kind': 'arr', 'payload': {'target': arr.parse(UPGRADE), 'attempt': 1}}
+        with patch.object(config, 'load_settings', return_value={'webhook': {}}), \
+             patch.object(arr, 'resolve', return_value=('Serien', ['10', '12'], ['/tv/Lost/Season 01'])), \
+             patch.object(arr, 'scan_folders') as scan, \
+             patch.object(overlay, 'run_overlay', new_callable=AsyncMock) as render, \
+             patch.object(tasks, 'enqueue', new_callable=AsyncMock, return_value=2) as enqueue:
+            progress.reset()
+            self.assertIsNone(asyncio.run(arr.arr_task(task)))
+        scan.assert_called_once_with('Serien', ['/tv/Lost/Season 01'])
+        render.assert_not_called()
+        self.assertEqual((enqueue.call_args.args[1]['attempt'], enqueue.call_args.kwargs['delay']), (2, arr.SCAN_DELAY))
 
 
 class TokenTest(unittest.TestCase):

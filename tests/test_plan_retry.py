@@ -96,5 +96,15 @@ class RetryTest(unittest.TestCase):
         self.assertEqual(progress.snapshot()['kometa_keys'], {'Filme': ['3'], 'Serien': ['8']})
         progress.reset()
 
+
+class RecentTest(unittest.TestCase):
+    def test_recently_added_or_updated_items(self):
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        items = [SimpleNamespace(title='neu', addedAt=now - timedelta(days=2), updatedAt=None),
+                 SimpleNamespace(title='upgrade', addedAt=now - timedelta(days=300), updatedAt=now - timedelta(days=5)),
+                 SimpleNamespace(title='alt', addedAt=now - timedelta(days=300), updatedAt=now - timedelta(days=30))]
+        self.assertEqual([item.title for item in overlay.recently_changed(items, 14)], ['neu', 'upgrade'])
+
 if __name__ == '__main__':
     unittest.main()

@@ -186,7 +186,7 @@ class PlexPosterManager:
 
         media = self.media_overlay
         source = source_label(item, media) if media.get('source', False) else None
-        languages = audio_languages(item) if episode and media.get('languages', False) else []
+        languages = self.episode_languages(item) if episode and media.get('languages', False) else []
         status = None
         if getattr(item, 'type', None) == 'show' and media.get('status', False) and tmdb_id:
             status = show_status_label(self.rating_fetcher.fetch_tmdb_status(tmdb_id), media)
@@ -209,6 +209,34 @@ class PlexPosterManager:
             inputs['problem'] = (('skipped', 'Keine Wertungen oder Badges') if episode
                                  else ('failed', 'Keine Wertungen verfügbar'))
         return inputs
+
+    def episode_languages(self, item):
+        """Audio languages of an episode.
+
+        Episodes listed for a whole library come without their streams, which would look like
+        "no languages". The streams are then loaded once per file (identified by part id, size
+        and path) and remembered, so an unchanged file is never fetched again and a replaced
+        file (an upgrade) is read anew."""
+        parts = [part for media in getattr(item, 'media', []) or [] for part in getattr(media, 'parts', []) or []]
+        cache = getattr(self.rating_fetcher, 'cache', None)
+        key = 'audio:' + '|'.join(f"{getattr(part, 'id', '')}:{getattr(part, 'size', '')}:{getattr(part, 'file', '')}"
+                                  for part in parts)
+        if not any(getattr(part, 'streams', None) for part in parts):
+            cached = cache.lookup(key) if cache and parts else None
+            if cached is not None:
+                return [tuple(entry) for entry in cached]
+            try:
+                item.reload()
+            except Exception:
+                logger.warning('Could not load audio streams of %s', getattr(item, 'title', item))
+                return []
+            parts = [part for media in getattr(item, 'media', []) or [] for part in getattr(media, 'parts', []) or []]
+            if not any(getattr(part, 'streams', None) for part in parts):
+                return []  # not analysed by Plex yet: ask again next time
+        languages = audio_languages(item)
+        if cache and parts:
+            cache.store(key, languages)
+        return languages
 
     @staticmethod
     def render_hash(inputs, original_path=None) -> str:

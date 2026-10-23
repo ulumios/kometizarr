@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.services import config, conflicts, library_index, tasks
@@ -154,6 +155,16 @@ def preview_outcome(plan, manager, item, request, row, options):
     return ('success', f'würde rendern: {reason}') if verdict == 'render' else ('skipped', reason)
 
 
+def recently_changed(items, days):
+    """Items Plex added or updated (new file, refreshed metadata) within ``days``; catches
+    imports and upgrades whose webhook was missed."""
+    cutoff = datetime.now() - timedelta(days=days)
+    def changed(item):
+        stamps = [getattr(item, name, None) for name in ('addedAt', 'updatedAt')]
+        return any(stamp and stamp >= cutoff for stamp in stamps)
+    return [item for item in items if changed(item)]
+
+
 async def run_overlay(request):
     """Render overlays for a library or selected items; outcome is in ``progress``."""
     imdb_cache = api_cache = None
@@ -197,6 +208,8 @@ async def run_overlay(request):
             all_items = manager.library.all()
             if request.include_episodes and manager.library.type == 'show':
                 all_items += manager.library.all(libtype='episode')
+            if request.recent_days:
+                all_items = recently_changed(all_items, request.recent_days)
             if request.limit:
                 all_items = all_items[:request.limit]
 

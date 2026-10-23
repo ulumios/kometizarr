@@ -26,6 +26,7 @@ class ProcessRequest(BaseModel):
     operation: Optional[str] = None  # library UI: current_overlay, imdb_overlay, reset_plex
     completed_keys: List[str] = []
     plan_only: bool = False  # preview of a large run: decide, but change nothing
+    recent_days: Optional[int] = None  # only items added or changed in Plex within these days
 
 
 class ProcessBatchRequest(BaseModel):
@@ -37,6 +38,7 @@ class ProcessBatchRequest(BaseModel):
     badge_style: Optional[Dict[str, Any]] = None
     media_overlay: Optional[Dict[str, Any]] = None
     include_episodes: bool = False
+    recent_days: Optional[int] = None
 
 
 class PreviewRequest(BaseModel):

@@ -205,3 +205,11 @@ Abweichungen vom Plan:
   Die Aufgabenliste zeigt die Einträge; ein Klick öffnet sie in der Bibliotheksansicht
   (gefiltert auf die Aufgabe, Serie → Staffel → Episode). Läufe aus der Bibliotheksansicht
   zeigen danach automatisch nur die betroffenen Titel.
+- **Upgrades aus Sonarr/Radarr**: Der Webhook nimmt den neuen Dateinamen mit. Zeigt Plex noch die
+  alte Datei, wird nur dieser Ordner in Plex gescannt und nach 90 s erneut versucht; erst dann wird
+  gerendert. Sonst würden Sprachen und Quelle der alten Datei gelesen.
+- **Episodensprachen in Bibliotheksläufen**: Plex liefert beim Auflisten aller Episoden keine
+  Tonspuren. Diese werden einmal pro Datei (Part-ID, Größe, Pfad) nachgeladen und gespeichert;
+  vorher wurden Episodenbilder in solchen Läufen ohne Sprachen gerendert.
+- **„Nur Neues prüfen“** (Dashboard): Prüflauf nur über Titel, die Plex in den letzten N Tagen
+  hinzugefügt oder aktualisiert hat (`recent_days`).

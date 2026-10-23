@@ -40,6 +40,16 @@ class ApiCache:
                             (key, json.dumps(value) if value is not None else None, time.time()))
         return value
 
+    def lookup(self, key):
+        """A stored value regardless of its age (for values that never go stale), or None."""
+        row = self.db.execute('SELECT value FROM api_cache WHERE key=?', (key,)).fetchone()
+        return json.loads(row[0]) if row and row[0] is not None else None
+
+    def store(self, key, value):
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO api_cache VALUES (?, ?, ?)',
+                            (key, json.dumps(value), time.time()))
+
     def clear(self):
         with self.db:
             self.db.execute('DELETE FROM api_cache')

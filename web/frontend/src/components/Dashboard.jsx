@@ -17,6 +17,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
   const [loading, setLoading] = useState(true)
   const [position, setPosition] = useState('northwest')  // Keep for backward compat display
   const [force, setForce] = useState(false)
+  const [recentDays, setRecentDays] = useState(14)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewResults, setPreviewResults] = useState(null)  // null = closed, [] = loading/empty
   const design = useDesignSettings()
@@ -99,7 +100,8 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
     if (res.ok) onOpenTasks?.()
   }
 
-  const startProcessing = async () => {
+  // recentDays: only titles Plex added or changed lately (missed webhooks, Sonarr/Radarr upgrades)
+  const startProcessing = async (recentDays = null) => {
     if (selectedLibraries.length === 0) return
 
     const enabledBadgePositions = design.enabledBadgePositions()
@@ -112,6 +114,7 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
       badge_style: badgeStyle,
       media_overlay: mediaOverlay,
       include_episodes: includeEpisodes,
+      recent_days: recentDays,
     }
 
     try {
@@ -260,7 +263,18 @@ function Dashboard({ onStartProcessing, onLibrarySelect, onOpenTasks }) {
 
           <ActionButtons selectedLibrary={selectedLibrary} selectedLibraries={selectedLibraries}
             previewLoading={previewLoading} restoreOriginals={restoreOriginals} previewPosters={previewPosters}
-            planProcessing={planProcessing} startProcessing={startProcessing} />
+            planProcessing={planProcessing} startProcessing={() => startProcessing()} />
+          <div className="flex flex-wrap items-center gap-3 bg-gray-900 rounded-lg p-3">
+            <button onClick={() => startProcessing(recentDays)} disabled={selectedLibraries.length === 0 || !(recentDays > 0)}
+              className="bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed rounded px-4 py-2 text-sm text-white">
+              🕑 Nur Neues prüfen
+            </button>
+            <label className="text-sm text-gray-300 flex items-center gap-2">der letzten
+              <input type="number" min="1" max="365" value={recentDays} onChange={e => setRecentDays(Number(e.target.value))}
+                className="w-16 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-white" /> Tage
+            </label>
+            <p className="text-xs text-gray-500 basis-full">Prüft nur Titel, die Plex in diesem Zeitraum hinzugefügt oder aktualisiert hat, z. B. nach einem Upgrade durch Sonarr/Radarr, falls ein Webhook verloren ging.</p>
+          </div>
         </div>
       </div>
       <PreviewModal
