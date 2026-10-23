@@ -169,6 +169,9 @@ function ProcessingProgress({ onComplete, progressData, setProgressData, compact
           </div>
         </div>
 
+        {progressData.task?.phase && (progressData.total === 0 || !isActive) && (
+          <p className="text-sm text-gray-300 mb-3">{progressData.task.phase}</p>
+        )}
         {/* Progress Bar */}
         <div className="mb-4">
           <div className="flex justify-between text-sm mb-2">
@@ -256,7 +259,7 @@ function ProcessingProgress({ onComplete, progressData, setProgressData, compact
       </div>
 
       {/* Completion Message */}
-      {!isActive && progressData.progress > 0 && (
+      {!isActive && (progressData.progress > 0 || (progressData.total === 0 && progressData.task?.phase)) && (
         <div className="bg-green-900/20 border border-green-700/50 rounded-lg p-6 text-center">
           <div className="text-4xl mb-3">🎉</div>
           <div className="text-2xl font-bold text-green-400 mb-2">

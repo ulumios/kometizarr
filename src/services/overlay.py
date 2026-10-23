@@ -165,6 +165,36 @@ def recently_changed(items, days):
     return [item for item in items if changed(item)]
 
 
+def library_items(library, include_episodes=False, recent_days=None):
+    """Items of a whole library. With ``recent_days`` Plex filters by date itself (added or
+    updated since), so a large show library is not listed episode by episode; servers that
+    reject the filter fall back to the full listing."""
+    from urllib.parse import urlencode
+
+    from plexapi import utils
+    libtypes = [library.type] + (['episode'] if include_episodes and library.type == 'show' else [])
+    items = []
+    for libtype in libtypes:
+        listing = library.all if libtype == library.type else (lambda: library.all(libtype=libtype))
+        if not recent_days:
+            items += listing()
+            continue
+        since = int((datetime.now() - timedelta(days=recent_days)).timestamp())
+        try:
+            found = {}
+            for field in ('addedAt', 'updatedAt'):
+                # Same syntax plexapi uses for "addedAt>>" (after); the Python filter below double-checks
+                ekey = (f'/library/sections/{library.key}/all?type={utils.searchType(libtype)}&'
+                        + urlencode({f'{field}>>': since}))
+                found.update({item.ratingKey: item for item in library.fetchItems(ekey)})
+            found = list(found.values())
+        except Exception as exc:
+            logger.warning('Plex date filter failed (%s); listing every %s', exc, libtype)
+            found = listing()
+        items += recently_changed(found, recent_days)
+    return items
+
+
 async def run_overlay(request):
     """Render overlays for a library or selected items; outcome is in ``progress``."""
     imdb_cache = api_cache = None
@@ -205,13 +235,16 @@ async def run_overlay(request):
         elif request.rating_key:
             all_items = [manager.library.fetchItem(int(request.rating_key))]
         else:
-            all_items = manager.library.all()
-            if request.include_episodes and manager.library.type == 'show':
-                all_items += manager.library.all(libtype='episode')
-            if request.recent_days:
-                all_items = recently_changed(all_items, request.recent_days)
+            # Listing a large library takes a while; off the event loop the UI stays responsive
+            progress.phase = (f'Suche Titel der letzten {request.recent_days} Tage in Plex' if request.recent_days
+                              else 'Lade Titel aus Plex')
+            await publish(force=True)
+            all_items = await asyncio.to_thread(library_items, manager.library, request.include_episodes,
+                                                request.recent_days)
             if request.limit:
                 all_items = all_items[:request.limit]
+            progress.phase = (f'Keine Titel in den letzten {request.recent_days} Tagen hinzugefügt oder geändert'
+                              if request.recent_days and not all_items else 'Poster prüfen')
 
         if request.rating_key and all_items:
             try:

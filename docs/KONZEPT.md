@@ -212,4 +212,5 @@ Abweichungen vom Plan:
   Tonspuren. Diese werden einmal pro Datei (Part-ID, Größe, Pfad) nachgeladen und gespeichert;
   vorher wurden Episodenbilder in solchen Läufen ohne Sprachen gerendert.
 - **„Nur Neues prüfen“** (Dashboard): Prüflauf nur über Titel, die Plex in den letzten N Tagen
-  hinzugefügt oder aktualisiert hat (`recent_days`).
+  hinzugefügt oder aktualisiert hat (`recent_days`). Plex filtert selbst nach `addedAt`/`updatedAt`;
+  das Laden einer Bibliothek läuft außerhalb der Event-Loop, damit UI und Webhooks reagieren.

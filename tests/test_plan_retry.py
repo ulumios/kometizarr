@@ -106,5 +106,27 @@ class RecentTest(unittest.TestCase):
                  SimpleNamespace(title='alt', addedAt=now - timedelta(days=300), updatedAt=now - timedelta(days=30))]
         self.assertEqual([item.title for item in overlay.recently_changed(items, 14)], ['neu', 'upgrade'])
 
+    def test_library_items_lets_plex_filter_by_date(self):
+        from datetime import datetime
+        recent = SimpleNamespace(ratingKey=1, title='neu', addedAt=datetime.now(), updatedAt=None)
+        upgraded = SimpleNamespace(ratingKey=2, title='upgrade', addedAt=datetime(2020, 1, 1), updatedAt=datetime.now())
+        calls = []
+        def fetch(ekey):
+            calls.append(ekey)
+            return [recent] if 'addedAt' in ekey else [recent, upgraded]
+        library = SimpleNamespace(key=3, type='show', fetchItems=fetch, all=lambda **kw: self.fail('no full listing'))
+        self.assertEqual([item.title for item in overlay.library_items(library, True, 14)], ['neu', 'upgrade'] * 2)
+        self.assertTrue(all(ekey.startswith('/library/sections/3/all?type=') for ekey in calls))
+        self.assertEqual([ekey.split('type=')[1].split('&')[0] for ekey in calls], ['2', '2', '4', '4'])
+
+    def test_library_items_falls_back_to_full_listing(self):
+        from datetime import datetime, timedelta
+        old = SimpleNamespace(title='alt', addedAt=datetime.now() - timedelta(days=99), updatedAt=None)
+        def fetch(ekey):
+            raise ValueError('bad request')
+        library = SimpleNamespace(key=1, type='movie', fetchItems=fetch, all=lambda **kw: [old])
+        self.assertEqual(overlay.library_items(library, True, 14), [])
+        self.assertEqual(overlay.library_items(library, True, None), [old])
+
 if __name__ == '__main__':
     unittest.main()
