@@ -17,6 +17,8 @@ export default function LibraryBrowser({ onStartProcessing }) {
   const [conflictsOnly, setConflictsOnly] = useState(saved.conflictsOnly || false)
   // Items without a Kometizarr overlay; Kometa-overlaid items (label or conflict) stay hidden
   const [missingOverlay, setMissingOverlay] = useState(saved.missingOverlay || false)
+  // Items whose last run failed (marked by every run until they render successfully)
+  const [errorsOnly, setErrorsOnly] = useState(saved.errorsOnly || false)
   const [flagsReady, setFlagsReady] = useState(true)
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
@@ -41,9 +43,9 @@ export default function LibraryBrowser({ onStartProcessing }) {
 
   useEffect(() => {
     sessionStorage.setItem('kometizarr-browser', JSON.stringify({
-      library, parent, trail, page, search, searchEpisodes, conflictsOnly, missingOverlay, resultFilter,
+      library, parent, trail, page, search, searchEpisodes, conflictsOnly, missingOverlay, errorsOnly, resultFilter,
     }))
-  }, [library, parent, trail, page, search, searchEpisodes, conflictsOnly, missingOverlay, resultFilter])
+  }, [library, parent, trail, page, search, searchEpisodes, conflictsOnly, missingOverlay, errorsOnly, resultFilter])
 
   useEffect(() => {
     if (!pendingJob) return undefined
@@ -54,7 +56,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
       if (pendingJob.library === library) {
         setResultFilter({ tasks: pendingJob.ids || [pendingJob.id] })
         setParent(null); setTrail([]); setPage(1); setSearch(''); setQuery('')
-        setConflictsOnly(false); setMissingOverlay(false); setSearchEpisodes(false)
+        setConflictsOnly(false); setMissingOverlay(false); setErrorsOnly(false); setSearchEpisodes(false)
       }
       setReload(value => value + 1)
       setPendingJob(null)
@@ -110,6 +112,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
     if (searchEpisodes && !parent) params.set('episodes', 'true')
     if (conflictsOnly) params.set('conflicts_only', 'true')
     if (missingOverlay) params.set('missing_overlay', 'true')
+    if (errorsOnly) params.set('errors_only', 'true')
     if (resultFilter) params.set('tasks', resultFilter.tasks.join(','))
     fetch(`/api/library/${encodeURIComponent(library)}/browse?${params}`)
       .then(async r => { const data = await r.json(); if (!r.ok) throw Error(data.detail || 'Library unavailable'); return data })
@@ -117,7 +120,7 @@ export default function LibraryBrowser({ onStartProcessing }) {
       .catch(e => { if (active) setError(e.message) })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [library, parent, page, query, searchEpisodes, conflictsOnly, missingOverlay, resultFilter, reload])
+  }, [library, parent, page, query, searchEpisodes, conflictsOnly, missingOverlay, errorsOnly, resultFilter, reload])
 
   useEffect(() => {
     if (!focusKey || loading) return
@@ -131,6 +134,11 @@ export default function LibraryBrowser({ onStartProcessing }) {
     return () => clearTimeout(timer)
   }, [indexing, reload])
 
+  // The three list filters exclude each other
+  const onlyFilter = (setter, checked) => {
+    setConflictsOnly(false); setMissingOverlay(false); setErrorsOnly(false)
+    setter(checked); setPage(1); setSelected([])
+  }
   const switchLibrary = name => { setLibrary(name); setParent(null); setTrail([]); setSearch(''); setSearchEpisodes(false); setPage(1); setSelected([]); setImdbJob(null); setResultFilter(null); setFocusKey(null) }
   const openFolder = item => { setTrail(previous => [...previous, parent]); setParent(item); setSearch(''); setPage(1); setSelected([]) }
   const goBack = () => { setParent(trail.at(-1) || null); setTrail(previous => previous.slice(0, -1)); setSearch(''); setPage(1); setSelected([]) }
@@ -234,9 +242,10 @@ export default function LibraryBrowser({ onStartProcessing }) {
     </div>
     <div className="bg-gray-800 border border-gray-700 rounded-xl p-5">
       <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
-        <span>{loading ? 'Lade Einträge…' : `${total} ${conflictsOnly ? 'Konflikte' : missingOverlay && !parent ? 'ohne Overlay' : parent?.type === 'show' ? 'Staffeln' : parent?.type === 'season' || searchEpisodes ? 'Episoden' : 'Einträge'}`}</span>
-        <div className="flex gap-3 items-center"><label className="text-sm flex items-center gap-2"><input type="checkbox" checked={conflictsOnly} onChange={e => { setConflictsOnly(e.target.checked); if (e.target.checked) setMissingOverlay(false); setPage(1); setSelected([]) }} /> Nur Konflikte</label>
-        <label className="text-sm flex items-center gap-2" title="Titel ohne Kometizarr-Overlay; Titel mit Kometa-Overlay werden ausgeblendet"><input type="checkbox" checked={missingOverlay} onChange={e => { setMissingOverlay(e.target.checked); if (e.target.checked) setConflictsOnly(false); setPage(1); setSelected([]) }} /> Nur ohne Overlay</label>
+        <span>{loading ? 'Lade Einträge…' : `${total} ${conflictsOnly ? 'Konflikte' : errorsOnly && !parent ? 'mit Fehlern' : missingOverlay && !parent ? 'ohne Overlay' : parent?.type === 'show' ? 'Staffeln' : parent?.type === 'season' || searchEpisodes ? 'Episoden' : 'Einträge'}`}</span>
+        <div className="flex flex-wrap gap-3 items-center"><label className="text-sm flex items-center gap-2"><input type="checkbox" checked={conflictsOnly} onChange={e => onlyFilter(setConflictsOnly, e.target.checked)} /> Nur Konflikte</label>
+        <label className="text-sm flex items-center gap-2" title="Titel ohne Kometizarr-Overlay; Titel mit Kometa-Overlay werden ausgeblendet"><input type="checkbox" checked={missingOverlay} onChange={e => onlyFilter(setMissingOverlay, e.target.checked)} /> Nur ohne Overlay</label>
+        <label className="text-sm flex items-center gap-2" title="Titel, bei denen der letzte Lauf fehlgeschlagen ist oder Daten fehlen (z. B. keine ID, kein Agent-Poster)"><input type="checkbox" checked={errorsOnly} onChange={e => onlyFilter(setErrorsOnly, e.target.checked)} /> Nur Fehler</label>
         <button disabled={!items.length} onClick={() => setSelected(previous => allVisible ? previous.filter(k => !items.some(item => item.key === k)) : [...new Set([...previous, ...items.map(item => item.key)])])}
           className="text-sm text-blue-300 disabled:text-gray-600">{allVisible ? 'Sichtbare abwählen' : 'Sichtbare auswählen'}</button></div>
       </div>
@@ -247,7 +256,8 @@ export default function LibraryBrowser({ onStartProcessing }) {
           <span className={`absolute top-2 right-2 rounded px-2 py-1 text-sm ${selected.includes(item.key) ? 'bg-blue-600 text-white' : 'bg-gray-900/90 text-gray-200'}`}>{selected.includes(item.key) ? '✓' : '○'}</span>
         </button>
         <div className="p-2.5"><div className="text-sm truncate" title={item.title}>{item.type === 'season' ? `Staffel ${item.index ?? '–'} · ` : item.type === 'episode' ? `${item.series ? `${item.series} · ` : ''}S${String(item.season ?? 0).padStart(2, '0')}E${String(item.index ?? 0).padStart(2, '0')} · ` : ''}{item.title} {item.year ? `(${item.year})` : ''}</div>
-        {item.result && <div className={`text-xs mt-1 ${/fehl|nicht|Kometa/.test(item.result) ? 'text-amber-300' : 'text-gray-400'}`} title={item.result}>{item.result}</div>}
+        {item.error && <div className="text-xs mt-1 text-red-300" title={item.error}>⚠ {item.error}</div>}
+        {item.result && item.result !== item.error && <div className={`text-xs mt-1 ${/fehl|nicht|Kometa/.test(item.result) ? 'text-amber-300' : 'text-gray-400'}`} title={item.result}>{item.result}</div>}
         {['show', 'season'].includes(item.type) && <button className="text-blue-300 text-xs mt-1" onClick={() => openFolder(item)}>{item.type === 'show' ? 'Staffeln anzeigen' : 'Episoden anzeigen'} →</button>}</div>
       </div>)}</div>
       {total > 60 && <div className="flex items-center gap-4 mt-5"><button disabled={page === 1} onClick={() => setPage(page - 1)}>← Zurück</button><span>Seite {page} / {Math.ceil(total / 60)}</span><button disabled={page * 60 >= total} onClick={() => setPage(page + 1)}>Weiter →</button></div>}

@@ -109,7 +109,7 @@ class MediaIndex:
                                 (library, 'overlay_flags', time.time()))
 
     def browse(self, library, parent_key=None, episodes=False, q='', page=1, page_size=60,
-               conflicts_only=False, missing_overlay=False, only_keys=None):
+               conflicts_only=False, missing_overlay=False, only_keys=None, errors_only=False):
         parent_row = None
         if parent_key is not None:
             parent_row = self.db.execute(
@@ -158,6 +158,23 @@ class MediaIndex:
                           f"WHERE library=? AND type='season' AND key IN ({episodes_missing}))))")
                 params.extend([library, library, library, library])
             select = 'SELECT key, title, type, year, item_index, series, season FROM media WHERE ' + where
+        if errors_only:
+            # Items whose last run failed (item_state, same database); shows and seasons lead to them
+            has_state = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_state'").fetchone()
+            failed = "SELECT rating_key FROM item_state WHERE library=? AND status='failed'" if has_state else 'SELECT NULL WHERE 0'
+            failed_params = [library] if has_state else []
+            episodes_failed = f"SELECT parent_key FROM media WHERE library=? AND type='episode' AND key IN ({failed})"
+            if parent_row and parent_row[0] == 'show':
+                where += f' AND (key IN ({failed}) OR key IN ({episodes_failed}))'
+                params.extend([*failed_params, library, *failed_params])
+            elif parent_row or episodes:
+                where += f' AND key IN ({failed})'
+                params.extend(failed_params)
+            else:
+                where += (f" AND (key IN ({failed}) OR (type='show' AND key IN (SELECT parent_key FROM media "
+                          f"WHERE library=? AND type='season' AND (key IN ({failed}) OR key IN ({episodes_failed})))))")
+                params.extend([*failed_params, library, *failed_params, library, *failed_params])
+            select = 'SELECT key, title, type, year, item_index, series, season FROM media WHERE ' + where
         if only_keys is not None:
             # Results of a task: the touched items and the shows/seasons leading to them
             where += ' AND key IN (SELECT value FROM json_each(?))'
@@ -168,6 +185,14 @@ class MediaIndex:
                                [*params, page_size, (page - 1) * page_size]).fetchall()
         return {'total': total, 'page': page, 'items': [dict(zip(
             ('key', 'title', 'type', 'year', 'index', 'series', 'season'), row)) for row in rows]}
+
+    def errors(self, library, keys):
+        """{key: reason} of the given items whose last run failed."""
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_state'").fetchone():
+            return {}
+        return dict(self.db.execute(
+            "SELECT rating_key, coalesce(reason, 'Fehler') FROM item_state WHERE library=? AND status='failed' "
+            "AND rating_key IN (SELECT value FROM json_each(?))", (library, json.dumps([str(key) for key in keys]))))
 
     def thumb(self, library, rating_key):
         row = self.db.execute('SELECT thumb FROM media WHERE library=? AND key=?',

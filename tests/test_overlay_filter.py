@@ -82,6 +82,29 @@ class OverlayFilterTest(unittest.TestCase):
                 'results': [{'key': '2', 'render': 'gerendert'}]}
         self.assertEqual(task_outcomes(imdb), {'2': 'gerendert'})
 
+    def test_errors_only_lists_failed_items_and_their_path(self):
+        from src.rating_overlay.item_state import ItemState
+        self.assertEqual(self.index.browse('Serien', errors_only=True)['items'], [])  # no state table yet
+        with ItemState(Path(self.folder) / 'index.db') as store:
+            store.update('Serien', '23', status='failed', reason='Kein Poster in Plex')
+            store.update('Serien', '22', status='skipped', reason='Kometa-Konflikt: übersprungen')
+            store.update('Filme', '2', status='failed', reason='Keine TMDB- oder IMDb-ID')
+            store.update('Filme', '1', status='rendered')
+        keys = lambda library, **kw: [e['key'] for e in self.index.browse(library, errors_only=True, **kw)['items']]
+        self.assertEqual(keys('Filme'), ['2'])
+        self.assertEqual(keys('Serien'), ['20'])
+        self.assertEqual(keys('Serien', parent_key=20), ['21'])
+        self.assertEqual(keys('Serien', parent_key=21), ['23'])
+        self.assertEqual(keys('Serien', episodes=True), ['23'])
+        self.assertEqual(self.index.errors('Serien', ['22', '23']), {'23': 'Kein Poster in Plex'})
+
+    def test_skip_reasons_that_are_errors(self):
+        from src.rating_overlay.decision import item_status
+        self.assertEqual(item_status('skipped', 'kein sauberes Agent-Poster gefunden'), 'failed')
+        self.assertEqual(item_status('failed', 'Keine TMDB- oder IMDb-ID'), 'failed')
+        self.assertEqual(item_status('skipped', 'Kometa-Konflikt: Reset erforderlich'), 'skipped')
+        self.assertEqual(item_status('skipped', 'wartet auf manuelles Plex-Poster'), 'skipped')
+
 
 class ScanFlagsTest(unittest.TestCase):
     def test_scan_reads_overlay_files_and_label_search(self):

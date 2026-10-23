@@ -204,7 +204,7 @@ async def run_overlay(request):
         await publish()
 
         from src.rating_overlay.api_cache import ApiCache
-        from src.rating_overlay.decision import Facts, Options, STEP_FAILURES, plan_item, plan_render
+        from src.rating_overlay.decision import Facts, Options, STEP_FAILURES, item_status, plan_item, plan_render
         from src.rating_overlay.kometa_conflicts import (
             ManualPosterQueue, has_overlay_label, has_kometizarr_overlay, remove_overlay_label)
         from src.rating_overlay.poster_storage import paths
@@ -336,7 +336,8 @@ async def run_overlay(request):
                     library_index.set_flags(request.library_name, item.ratingKey,
                                             has_overlay=manager.backup_manager.has_overlay(request.library_name, item))
                 if counter != 'skipped' or not reason.startswith('unverändert'):
-                    mark_item(request.library_name, item, status=counter, reason=reason)
+                    # errors stay marked (filter "Nur Fehler") until the item renders successfully
+                    mark_item(request.library_name, item, status=item_status(counter, reason), reason=reason)
                 if plan.remember_conflict:
                     await asyncio.to_thread(conflicts.remember, request.library_name, item)
                     if not request.plan_only:

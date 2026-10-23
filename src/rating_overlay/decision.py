@@ -18,6 +18,18 @@ STEP_FAILURES = {
 }
 
 
+# Skips that mean something is wrong with the title (shown under "Nur Fehler"); Kometa
+# conflicts, waiting for a manual poster and unchanged posters are not errors.
+ERROR_SKIPS = {'kein sauberes Agent-Poster gefunden', 'Kometa-Original nicht lesbar',
+               'manuelles Plex-Poster konnte nicht gesichert werden', 'Keine Wertungen oder Badges',
+               'Unsicheres Original: Kometa-Poster'}
+
+
+def item_status(counter, reason):
+    """Status stored for a skipped or failed item: 'failed' marks it as an error."""
+    return 'failed' if counter == 'failed' or reason in ERROR_SKIPS else counter
+
+
 @dataclass
 class Options:
     operation: Optional[str] = None      # None, 'current_overlay', 'imdb_overlay'

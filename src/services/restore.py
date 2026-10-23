@@ -64,6 +64,10 @@ async def run_restore(request):
             # Reasons are kept per item so the library browser can show this run's results
             progress.count('success' if outcome == 'restored' else outcome, item.ratingKey,
                            reason=RESTORE_REASONS[(request.reset_to_plex, outcome)])
+            if outcome in ('skipped', 'failed') and request.reset_to_plex:
+                # no clean agent poster or a failed reset: listed under "Nur Fehler"
+                overlay.mark_item(request.library_name, item, status='failed',
+                                  reason=RESTORE_REASONS[(True, outcome)])
             if outcome == 'restored':
                 library_index.invalidate_browse_poster(request.library_name, item.ratingKey)
                 overlay.mark_item(request.library_name, item, status='original', reason=None)

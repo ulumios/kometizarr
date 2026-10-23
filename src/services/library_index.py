@@ -64,7 +64,7 @@ def task_items(task, limit=500):
 
 
 def read_library_index(library_name, parent_key, episodes, q, page, page_size, conflicts_only=False,
-                       missing_overlay=False, task_ids=()):
+                       missing_overlay=False, task_ids=(), errors_only=False):
     from src.rating_overlay.media_index import MediaIndex
     from src.services import tasks
     index = MediaIndex()
@@ -80,11 +80,14 @@ def read_library_index(library_name, parent_key, episodes, q, page, page_size, c
             only_keys = index.related_keys(library_name, list(outcomes))
         result = index.browse(library_name, parent_key, episodes, q, page, page_size,
                               conflicts_only=conflicts_only, missing_overlay=missing_overlay,
-                              only_keys=only_keys) if updated_at else {
+                              only_keys=only_keys, errors_only=errors_only) if updated_at else {
             'total': 0, 'page': page, 'items': []}
+        errors = index.errors(library_name, [item['key'] for item in result['items']])
         for item in result['items']:
             if outcomes.get(item['key']):
                 item['result'] = outcomes[item['key']]
+            if item['key'] in errors:
+                item['error'] = errors[item['key']]
         # The overlay filter needs one scan after this feature was installed
         result['overlay_flags_ready'] = index.flags_ready(library_name)
         return updated_at, result

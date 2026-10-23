@@ -214,3 +214,8 @@ Abweichungen vom Plan:
 - **„Nur Neues prüfen“** (Dashboard): Prüflauf nur über Titel, die Plex in den letzten N Tagen
   hinzugefügt oder aktualisiert hat (`recent_days`). Plex filtert selbst nach `addedAt`/`updatedAt`;
   das Laden einer Bibliothek läuft außerhalb der Event-Loop, damit UI und Webhooks reagieren.
+- **Fehler markieren**: Jeder Lauf speichert fehlerhafte Titel in `item_state` (`status='failed'`
+  mit Grund): Render-/Upload-Fehler und Datenprobleme (keine ID, keine Wertungen, kein Agent-Poster,
+  Original nicht sicherbar). Kometa-Konflikte und „unverändert“ zählen nicht. Ein erfolgreicher
+  Lauf entfernt die Markierung. Die Bibliotheksansicht filtert mit „Nur Fehler“ (Serie → Staffel →
+  Episode) und zeigt den Grund am Titel.
