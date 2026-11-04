@@ -32,10 +32,22 @@ def _folder(path):
 
 
 def _files(data):
-    """Names of the imported files: new or upgraded episode/movie files."""
+    """{name: size or None} of the imported files: new or upgraded episode/movie files.
+
+    The size matters when Sonarr/Radarr keep the file name on an upgrade (naming without
+    quality or languages): only then can a replaced file be told from the old one."""
     entries = [data.get('episodeFile'), data.get('movieFile'), *(data.get('episodeFiles') or [])]
-    return sorted({_name(entry.get('relativePath') or entry.get('path'))
-                   for entry in entries if isinstance(entry, dict) and (entry.get('relativePath') or entry.get('path'))})
+    files = {}
+    for entry in entries:
+        if isinstance(entry, dict) and (entry.get('relativePath') or entry.get('path')):
+            size = entry.get('size')
+            files[_name(entry.get('relativePath') or entry.get('path'))] = int(size) if size else None
+    return files
+
+
+def _file_fields(data):
+    files = _files(data)
+    return {'files': sorted(files), 'file_sizes': {name: size for name, size in files.items() if size}}
 
 
 def parse(data):
@@ -46,20 +58,30 @@ def parse(data):
         movie = data['movie']
         return {'type': 'movie', 'title': movie.get('title'), 'ids': {
             'imdb': movie.get('imdbId'), 'tmdb': movie.get('tmdbId')}, 'episodes': [],
-            'files': _files(data), 'upgrade': bool(data.get('isUpgrade'))}
+            **_file_fields(data), 'upgrade': bool(data.get('isUpgrade'))}
     if data.get('series'):
         series = data['series']
         episodes = [[e.get('seasonNumber'), e.get('episodeNumber')] for e in data.get('episodes') or []
                     if e.get('seasonNumber') is not None and e.get('episodeNumber') is not None]
         return {'type': 'show', 'title': series.get('title'), 'ids': {
             'imdb': series.get('imdbId'), 'tvdb': series.get('tvdbId'), 'tmdb': series.get('tmdbId')},
-            'episodes': episodes, 'files': _files(data), 'upgrade': bool(data.get('isUpgrade'))}
+            'episodes': episodes, **_file_fields(data), 'upgrade': bool(data.get('isUpgrade'))}
     return None
 
 
 def _plex_files(item):
-    return [getattr(part, 'file', '') or '' for media in getattr(item, 'media', []) or []
-            for part in getattr(media, 'parts', []) or []]
+    """(path, size) of every file Plex has for the item."""
+    return [(getattr(part, 'file', '') or '', getattr(part, 'size', None))
+            for media in getattr(item, 'media', []) or [] for part in getattr(media, 'parts', []) or []]
+
+
+def has_imported_file(target, plex_files):
+    """True when Plex lists the file Sonarr/Radarr imported (same name and, if known, same size)."""
+    wanted, sizes = set(target.get('files') or []), target.get('file_sizes') or {}
+    if not wanted or not plex_files:
+        return True  # nothing to compare (older payloads): render right away as before
+    return any(_name(path) in wanted and (sizes.get(_name(path)) is None or str(size) == str(sizes[_name(path)]))
+               for path, size in plex_files)
 
 
 def resolve(target, libraries):
@@ -87,11 +109,10 @@ def resolve(target, libraries):
                     return None  # the show is there, the new episode not yet
                 keys.append(str(episode.ratingKey))
                 media_items.append(episode)
-            plex_files = [path for media_item in media_items for path in _plex_files(media_item)]
-            wanted = set(target.get('files') or [])
+            plex_files = [entry for media_item in media_items for entry in _plex_files(media_item)]
             folders = []
-            if wanted and plex_files and not wanted & {_name(path) for path in plex_files}:
-                folders = sorted({folder for folder in map(_folder, plex_files) if folder})
+            if not has_imported_file(target, plex_files):
+                folders = sorted({folder for folder in (_folder(path) for path, _ in plex_files) if folder})
             return library.title, keys, folders
     return None
 

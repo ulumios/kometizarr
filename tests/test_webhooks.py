@@ -98,6 +98,19 @@ class UpgradeTest(unittest.TestCase):
         with patch.object(config, 'plex_server', return_value=new):
             self.assertEqual(arr.resolve(arr.parse(UPGRADE), []), ('Serien', ['10', '12'], []))
 
+    def test_same_name_upgrade_waits_for_the_new_size(self):
+        """Sonarr naming without quality keeps the file name; only the size tells the files apart."""
+        payload = {**SONARR, 'isUpgrade': True,
+                   'episodeFile': {'relativePath': 'Season 01/Lost - S01E02.mkv', 'size': 2500}}
+        target = arr.parse(payload)
+        self.assertEqual(target['file_sizes'], {'Lost - S01E02.mkv': 2500})
+        old = [('/tv/Lost/Season 01/Lost - S01E02.mkv', 900)]
+        new = [('/tv/Lost/Season 01/Lost - S01E02.mkv', 2500)]
+        self.assertFalse(arr.has_imported_file(target, old))
+        self.assertTrue(arr.has_imported_file(target, new))
+        # without a size (older Sonarr) the name decides, as before
+        self.assertTrue(arr.has_imported_file(arr.parse(UPGRADE), [('/x/Lost - S01E02 - Title [Bluray-1080p].mkv', 1)]))
+
     def test_scans_the_folder_and_retries(self):
         task = {'id': 1, 'kind': 'arr', 'payload': {'target': arr.parse(UPGRADE), 'attempt': 1}}
         with patch.object(config, 'load_settings', return_value={'webhook': {}}), \

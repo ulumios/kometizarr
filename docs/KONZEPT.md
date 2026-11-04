@@ -207,7 +207,8 @@ Abweichungen vom Plan:
   zeigen danach automatisch nur die betroffenen Titel.
 - **Upgrades aus Sonarr/Radarr**: Der Webhook nimmt den neuen Dateinamen mit. Zeigt Plex noch die
   alte Datei, wird nur dieser Ordner in Plex gescannt und nach 90 s erneut versucht; erst dann wird
-  gerendert. Sonst würden Sprachen und Quelle der alten Datei gelesen.
+  gerendert. Sonst würden Sprachen und Quelle der alten Datei gelesen. Behält Sonarr/Radarr beim
+  Upgrade den Dateinamen (Benennung ohne Qualität), entscheidet die Dateigröße aus dem Webhook.
 - **Episodensprachen in Bibliotheksläufen**: Plex liefert beim Auflisten aller Episoden keine
   Tonspuren. Diese werden einmal pro Datei (Part-ID, Größe, Pfad) nachgeladen und gespeichert;
   vorher wurden Episodenbilder in solchen Läufen ohne Sprachen gerendert.
