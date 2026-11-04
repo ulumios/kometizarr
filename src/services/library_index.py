@@ -158,6 +158,11 @@ def set_flags(library_name, rating_key, **flags):
         logger.exception('Could not update overlay flags for %s', rating_key)
 
 
+def _parent_of(item):
+    """Plex offers no generic parent(): episodes have season(), seasons have show()."""
+    return item.season() if item.TYPE == 'episode' else item.show()
+
+
 def index_new_item(library_name, item):
     """Update one newly added media item without rescanning its library."""
     from src.rating_overlay.media_index import MediaIndex
@@ -168,11 +173,11 @@ def index_new_item(library_name, item):
         ancestors = []
         parent_key = getattr(item, 'parentRatingKey', None)
         if parent_key and not index.has_item(library_name, parent_key):
-            parent = item.parent()
+            parent = _parent_of(item)
             ancestors.append(parent)
             grandparent_key = getattr(parent, 'parentRatingKey', None)
             if grandparent_key and not index.has_item(library_name, grandparent_key):
-                ancestors.append(parent.parent())
+                ancestors.append(_parent_of(parent))
         for ancestor in reversed(ancestors):
             index.upsert_item(library_name, ancestor, has_overlay=None)
         from src.rating_overlay.kometa_conflicts import has_overlay_label
